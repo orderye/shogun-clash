@@ -166,6 +166,7 @@ const Game = {
       turnsTaken: 0, graceCnt: 0, zoneUsed: 0, attackUsed: 0, drawnThisTurn: false,
       noAtkUntil: 0, recruitUsed: false, healCooldown: 0, purgeUsed: false, bypassUsed: false, assassinUsed: false,
       talentCooldown: 3, natureUsed: false, rankUsed: false, rankBlockAttack: false, tempoUsed: false,
+      noUnitStreak: 0, // 连续无人物牌（场上+手牌）的己方回合数
     });
     const players = [mk("玩家", false, d.avatars[0].emperor, d.avatars[0].shogun, hp[0]),
                      mk("电脑", true, d.avatars[1].emperor, d.avatars[1].shogun, hp[1])];
@@ -683,6 +684,8 @@ const Game = {
     }
     // 圣迹/灾厄代价检查
     if (p.noAtkUntil >= st.turnNo) this.log(`⚠ ${p.name} 本回合不能攻击（圣迹/灾厄代价）`);
+    // 特殊召唤·绝境来援：连续 3 个己方回合无人物牌 → 从弃牌堆随机召唤一位人物（玩家弹窗/AI 自动）
+    this.checkNoUnitSummon(st.cur);
     UI.renderAll();
   },
 
@@ -790,6 +793,60 @@ const Game = {
     this.log(`✨ 恩典召唤！${p.name} 特殊召唤 ${KIND_CN[c.type]}【${c.card.name}】（无需献祭）`, p.isAI ? "ai" : "me", c);
     UI.renderAll();
     return true;
+  },
+
+  /* 特殊召唤·绝境来援：连续 3 个己方回合场上+手牌均无人物牌（武士/公卿/大名）时，
+     可从弃牌堆随机召唤一位人物到己方战场（玩家弹窗选择，AI 自动） */
+  noUnitSummonInfo(pi) {
+    const p = this.state.players[pi];
+    if (p.noUnitStreak < 3) return null;
+    if (p.field.length >= 5) return { blocked: "战场区已满（5 牌位）" };
+    const persons = this.state.discard.filter(d => d.type === "samurai" || d.type === "noble" || d.type === "daimyo");
+    if (!persons.length) return { blocked: "弃牌堆无人物牌" };
+    return { ok: true, count: persons.length };
+  },
+  doNoUnitSummon(pi) {
+    const st = this.state;
+    const p = st.players[pi];
+    const info = this.noUnitSummonInfo(pi);
+    if (!info || !info.ok) return false;
+    const persons = st.discard.filter(d => d.type === "samurai" || d.type === "noble" || d.type === "daimyo");
+    const pick = persons[Math.floor(Math.random() * persons.length)];
+    const di = st.discard.indexOf(pick);
+    st.discard.splice(di, 1);
+    const gu = this.newUnit(pi, pick.type, pick.card);
+    p.field.push(gu);
+    this.castleL4OnUnitEnter(pi, gu);
+    p.noUnitStreak = 0; // 触发后重置计数
+    if (UI.unitEnter) UI.unitEnter(gu.uid);
+    this.log(`🙌 绝境来援！${p.name} 连续 3 回合无人物牌，从弃牌堆特殊召唤 ${KIND_CN[pick.type]}【${gu.card.name}】`, p.isAI ? "ai" : "me", pick);
+    UI.renderAll();
+    return true;
+  },
+  /* 回合开始检查：连续无人物牌计数 + 触发特殊召唤 */
+  checkNoUnitSummon(pi) {
+    const p = this.state.players[pi];
+    const hasPerson = p.field.some(u => u.kind === "samurai" || u.kind === "noble" || u.kind === "daimyo") ||
+      p.hand.some(c => c.type === "samurai" || c.type === "noble" || c.type === "daimyo");
+    if (hasPerson) { p.noUnitStreak = 0; return; }
+    p.noUnitStreak = (p.noUnitStreak || 0) + 1;
+    const info = this.noUnitSummonInfo(pi);
+    if (!info || !info.ok) {
+      if (info && info.blocked) this.log(`⚠ ${p.name} 连续 ${p.noUnitStreak} 回合无人物牌，但${info.blocked}，本次不召唤`);
+      return;
+    }
+    if (pi === 0) {
+      // 玩家弹窗选择
+      this.state.prompting = true;
+      UI.askNoUnitSummon(info, (use) => {
+        this.state.prompting = false;
+        if (use) this.doNoUnitSummon(0);
+        else UI.renderAll(); // 放弃：计数保留（下个己方回合仍可再次选择）
+      });
+    } else {
+      // AI 自动执行
+      this.doNoUnitSummon(1);
+    }
   },
 
   /* 玩家自行决定：将战场区单位下场（移入弃牌堆） */
@@ -1494,6 +1551,8 @@ const Game = {
     if (!u) { this.log("单位不存在"); return false; }
     // 每类型每回合仅一位发动攻击（防御方单位可被对方数张卡攻击直到下场）
     if (p.typeAtk && p.typeAtk[u.kind]) { this.log(`本回合 ${KIND_CN[u.kind]} 已发动过攻击（每类型仅一位）`); return false; }
+    // 每个单位本回合只能攻击一次（即使攻击被消解/替死等中断，该单位攻击次数也已耗尽）
+    if (u.attackedThisTurn) { this.log(`【${u.card.name}】本回合已攻击过，攻击次数耗尽`); return false; }
     // 尊位·御破：被攻击方拥有「攻击失效」尊位时，攻击发生时弹出选择（每局一次，耗当前生命 1/10）
     if (!skipRank) {
       const defP = st.players[1 - pi];
@@ -1506,6 +1565,7 @@ const Game = {
           defP.rankUsed = true;
           // 被令失效的攻击仍计入攻击方该类型本回合的一次攻击（每类型每回合仅一位）
           p.typeAtk[u.kind] = true;
+          u.attackedThisTurn = true; // 该单位攻击次数亦耗尽
           this.log(`👑 尊位·御破：${defP.name} 令【${p.name}】本次攻击失效（不产生伤害）！`);
           UI.renderAll();
           return true;
@@ -2427,6 +2487,7 @@ const Game = {
           if (useIdx !== null) {
             this.useEvent(0, useIdx, true); // 第一层消解生效 → 禁攻代价
             this.log(`✨【${u.card.name}】的攻击被消解！`);
+            u.attackedThisTurn = true; // 该 AI 单位攻击次数已耗尽
             // 第一层消解抵消后：撤销 AI 该类型禁令，该类型重新获得一次攻击
             delete st.players[1].typeAtk[u.kind];
           } else {

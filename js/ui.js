@@ -756,6 +756,10 @@ const UI = {
             this.logHint(`【${u0.card.name}】本回合该类型已发动过攻击，不可再选`);
             return;
           }
+          if (u0.attackedThisTurn) {
+            this.logHint(`【${u0.card.name}】本回合已攻击过，攻击次数耗尽`);
+            return;
+          }
           this.selectedAttacker = uid;
           this.aimFromUid = uid;
           this.mode = "combat";
@@ -1297,6 +1301,14 @@ const UI = {
     this.showModal("🐎 的卢之魂 · 替死", `骑具【<b>${m.name}</b>】愿替【${t.card.name}】（${KIND_CN[t.kind]}）挡下这次击破！<br><span style="color:#ff9a8a">条件：己方将军生命低于对方。发动后骑具弃置，单位存活。</span>`, [
       { label: "发动替死", cls: "primary", fn: () => { this.hideModal(); cb(true); } },
       { label: "放弃（承受击破）", fn: () => { this.hideModal(); cb(false); } },
+    ]);
+  },
+
+  /* 绝境来援：连续 3 回合无人物牌 → 玩家选择是否从弃牌堆特殊召唤 */
+  askNoUnitSummon(info, cb) {
+    this.showModal("🙌 绝境来援 · 特殊召唤", `你已连续 <b>3</b> 个己方回合没有人物牌（场上与手牌皆无）！<br>可从<b>弃牌堆</b>随机召唤一位人物（武士／公卿／大名）到己方战场。<br><span style="color:#ff9a8a">弃牌堆现有人物牌 ${info.count} 张。召唤后计数重置。</span>`, [
+      { label: "执行特殊召唤", cls: "primary", fn: () => { this.hideModal(); cb(true); } },
+      { label: "放弃（本次不召唤）", fn: () => { this.hideModal(); cb(false); } },
     ]);
   },
 
