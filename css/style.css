@@ -662,3 +662,31 @@ body { overflow-x: hidden; }
   /* 顶部按钮不挤压标题 */
   #topbar { gap: 6px; }
 }
+
+/* ═══ 国士无双特效（中央四分之一区域 · 四字竖排） ═══ */
+.guoshi-overlay {
+  position: fixed; top: 25%; left: 50%; transform: translateX(-50%);
+  width: 50vw; height: 50vh; /* 中央四分之一区域 */
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; z-index: 46; pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(201,162,39,.12), transparent 65%);
+  animation: gsFade 4s ease forwards;
+}
+.guoshi-word {
+  font-size: 72px; font-weight: 900; color: var(--gold);
+  text-shadow: 0 0 24px rgba(201,162,39,.9), 0 0 60px rgba(255,215,0,.4);
+  letter-spacing: 4px; line-height: 1;
+  opacity: 0; transform: translateY(-30px);
+  animation: gsDrop .7s ease forwards;
+}
+.guoshi-word:nth-child(1) { animation-delay: .1s; }
+.guoshi-word:nth-child(2) { animation-delay: .45s; }
+.guoshi-word:nth-child(3) { animation-delay: .8s; }
+.guoshi-word:nth-child(4) { animation-delay: 1.15s; }
+@keyframes gsDrop { to { opacity: 1; transform: translateY(0); } }
+@keyframes gsFade {
+  0% { opacity: 0; } 12% { opacity: 1; } 85% { opacity: 1; } 100% { opacity: 0; }
+}
+@media (max-width: 640px) {
+  .guoshi-word { font-size: 48px; }
+}

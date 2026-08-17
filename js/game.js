@@ -167,6 +167,11 @@ const Game = {
       noAtkUntil: 0, recruitUsed: false, healCooldown: 0, purgeUsed: false, bypassUsed: false, assassinUsed: false,
       talentCooldown: 3, natureUsed: false, rankUsed: false, rankBlockAttack: false, tempoUsed: false,
       noUnitStreak: 0, // 连续无人物牌（场上+手牌）的己方回合数
+      duelStrikeUsed: false, // 春秋义战：对方空场时本回合是否已直击将军（每回合一次）
+      imperialT1Used: false, // 帝王之征·条件1（每局一次）
+      imperialT2Used: false, // 帝王之征·条件2（每局一次）
+      forgeUsed: false, // 装具·熔炉（每回合一次）
+      gracePenaltyUsed: false, // 义战之恩（每回合一次）
     });
     const players = [mk("玩家", false, d.avatars[0].emperor, d.avatars[0].shogun, hp[0]),
                      mk("电脑", true, d.avatars[1].emperor, d.avatars[1].shogun, hp[1])];
@@ -269,6 +274,69 @@ const Game = {
     if (st.players[pi].field.length >= 5) return { kind: "steal", blocked: "己方战场区已满" };
     return { kind: "steal", label: "夺取对方一名武士", ok: true };
   },
+
+  /* 帝王之征（逆境特惠，每局各一次）
+     条件1：敌方生命 ≥ 己方生命的 2 倍（多一倍，如我 5 敌 10）→ 回复已失去生命的一半，舍弃所有手牌
+     条件2：敌方生命 ≥ 己方生命的 3 倍（多两倍，如我 5 敌 15）→ 回复相差值（敌−己）的一半，舍弃所有手牌与战场区所有牌
+     条件达成时右上角显示按钮，条件不够时隐藏 */
+  imperialInfo(pi) {
+    const st = this.state;
+    const p = st.players[pi];
+    const opp = st.players[1 - pi];
+    const results = [];
+    if (!p.imperialT1Used && opp.hp >= p.hp * 2) {
+      const lost = Math.max(0, (p.maxHp || 100) - p.hp);
+      results.push({ kind: 1, label: `帝王之征·Ⅰ（回复已失去生命的一半 ${Math.floor(lost / 2)}，舍弃所有手牌）`, heal: Math.floor(lost / 2), ok: true });
+    }
+    if (!p.imperialT2Used && opp.hp >= p.hp * 3) {
+      const diff = Math.max(0, opp.hp - p.hp);
+      results.push({ kind: 2, label: `帝王之征·Ⅱ（回复相差值的一半 ${Math.floor(diff / 2)}，舍弃手牌与战场区）`, heal: Math.floor(diff / 2), ok: true });
+    }
+    return results;
+  },
+  useImperial(pi, kind) {
+    const st = this.state;
+    const p = st.players[pi];
+    const opp = st.players[1 - pi];
+    if (kind === 1) {
+      if (p.imperialT1Used || opp.hp < p.hp * 2) { this.log("帝王之征·Ⅰ 当前不可用"); return false; }
+      const lost = Math.max(0, (p.maxHp || 100) - p.hp);
+      const heal = Math.floor(lost / 2);
+      p.hp = Math.min(p.maxHp || 100, p.hp + heal);
+      this.hpEvent(pi, -heal, "帝王之征·Ⅰ", p.hp);
+      for (const c of p.hand) st.discard.push(c);
+      const n = p.hand.length;
+      p.hand = [];
+      p.imperialT1Used = true;
+      this.eHist(pi, "帝王之征·Ⅰ", `回复 ${heal}，舍弃手牌 ${n} 张`);
+      this.log(`👑 帝王之征·Ⅰ：${p.name} 敌方生命 ≥ 己方，回复 ${heal} 点（已失去生命一半），舍弃所有手牌 ${n} 张 → HP ${p.hp}`, p.isAI ? "ai" : "me");
+      UI.renderAll();
+      return true;
+    }
+    if (kind === 2) {
+      if (p.imperialT2Used || opp.hp < p.hp * 3) { this.log("帝王之征·Ⅱ 当前不可用"); return false; }
+      const diff = Math.max(0, opp.hp - p.hp);
+      const heal = Math.floor(diff / 2);
+      p.hp = Math.min(p.maxHp || 100, p.hp + heal);
+      this.hpEvent(pi, -heal, "帝王之征·Ⅱ", p.hp);
+      for (const c of p.hand) st.discard.push(c);
+      const n = p.hand.length;
+      p.hand = [];
+      // 舍弃战场区所有牌（单位下场）
+      let m = 0;
+      for (const u of p.field.slice()) {
+        st.discard.push({ type: u.kind, card: u.card });
+        m++;
+      }
+      p.field = [];
+      p.imperialT2Used = true;
+      this.eHist(pi, "帝王之征·Ⅱ", `回复 ${heal}，舍弃手牌 ${n} 张与战场区 ${m} 张`);
+      this.log(`👑 帝王之征·Ⅱ：${p.name} 敌方生命 ≥ 己方两倍，回复 ${heal} 点（相差值一半），舍弃手牌 ${n} 张与战场区 ${m} 张 → HP ${p.hp}`, p.isAI ? "ai" : "me");
+      UI.renderAll();
+      return true;
+    }
+    return false;
+  },
   useTempo(pi) {
     const st = this.state;
     const p = st.players[pi];
@@ -305,6 +373,10 @@ const Game = {
     const st = this.state;
     const p = st.players[u.pi];
     const pi = u.pi;
+    // 国士无双盾武士：所有数值恒为 0（不受光环/装备影响）
+    if (u.guoshiGuard) {
+      return { atk: 0, def: 0, rawAtk: 0, rawDef: 0, AP: [{ k: "基础攻击", v: 0 }, { k: "国士无双盾", v: 0 }], DP: [{ k: "基础防御", v: 0 }, { k: "国士无双盾", v: 0 }] };
+    }
     const AP = [], DP = [];
     let atk = u.baseAtk, def = u.baseDef;
     AP.push({ k: "基础攻击", v: u.baseAtk });
@@ -570,6 +642,9 @@ const Game = {
     p.purgeUsed = false; // 御·庇护每回合一次
     p.bypassUsed = false; // 破阵每回合一次
     p.assassinUsed = false; // 暗杀每回合一次
+    p.duelStrikeUsed = false; // 春秋义战：每回合直击一次
+    p.forgeUsed = false; // 装具·熔炉：每回合一次
+    p.gracePenaltyUsed = false; // 义战之恩：每回合一次
     UI.renderAll();
 
     // 阶段一 · 开始
@@ -597,9 +672,14 @@ const Game = {
       }).join("；");
       this.eHist(st.cur, "增幅轨道施展", trs);
     }
-    // 天皇·将军之佑
+    // 天皇·将军之佑（若己方场上有大名则不生效）
+    const hasDaimyoBless = p.field.some(u => u.kind === "daimyo");
     for (const t of [p.emperor.t1, p.emperor.t2, p.emperor.t3]) {
       if (t.includes("将军之佑")) {
+        if (hasDaimyoBless) {
+          this.log(`天皇【${p.emperor.name}】将军之佑：己方场上有大名，本回合不生效`);
+          continue;
+        }
         const v = parseInt(t.match(/(\d+)/)[1]);
         p.hp = Math.min(p.maxHp || 100, p.hp + v);
         this.log(`天皇【${p.emperor.name}】将军之佑 +${v} → ${p.name} HP ${p.hp}`);
@@ -686,6 +766,8 @@ const Game = {
     if (p.noAtkUntil >= st.turnNo) this.log(`⚠ ${p.name} 本回合不能攻击（圣迹/灾厄代价）`);
     // 特殊召唤·绝境来援：连续 3 个己方回合无人物牌 → 从弃牌堆随机召唤一位人物（玩家弹窗/AI 自动）
     this.checkNoUnitSummon(st.cur);
+    // 天皇·国士无双：战场区无牌且生命低于对方 → 自动从弃牌堆召唤盾武士
+    this.guoshiSummon(st.cur);
     UI.renderAll();
   },
 
@@ -719,7 +801,12 @@ const Game = {
     p.hp -= cost;
     this.hpEvent(pi, cost, "御·庇护", p.hp, false);
     p.purgeUsed = true;
-    for (const s of ["blade", "armor", "mount"]) if (t.eq[s]) { this.state.discard.push({ type: s, card: t.eq[s] }); t.eq[s] = null; }
+    for (const s of ["blade", "armor", "mount"]) if (t.eq[s]) {
+      const eq = t.eq[s];
+      this.state.discard.push({ type: s, card: eq });
+      t.eq[s] = null;
+      if (s === "mount") this.mountLeaves(pi, eq); // 八百里分麾下炙：骑具下场联动
+    }
     t.extraAtk = 0; t.extraDef = 0; t.purged = true;
     t.hist = t.hist || [];
     t.hist.push({ t: this.state.turnNo, src: "御·庇护", desc: "增幅归零（装备弃置、特效失效）" });
@@ -764,6 +851,13 @@ const Game = {
     p.field.splice(fi, 1);
     this.state.discard.push({ type: sac.kind, card: sac.card });
     this.castleL4OnUnitGone(sac);
+    // 祭品装备随弃（骑具下场触发八百里分麾下炙）
+    for (const s of ["blade", "armor", "mount"]) if (sac.eq && sac.eq[s]) {
+      const eq = sac.eq[s];
+      this.state.discard.push({ type: s, card: eq });
+      sac.eq[s] = null;
+      if (s === "mount") this.mountLeaves(pi, eq);
+    }
     const u = this.newUnit(pi, c.type, c.card);
     p.field.push(u);
     this.castleL4OnUnitEnter(pi, u);
@@ -849,6 +943,39 @@ const Game = {
     }
   },
 
+  /* 天皇·国士无双（通用触发）：己方回合开始，若本回合战场区没有牌且己方生命低于对方，
+     从弃牌堆召唤一位武士——该武士所有数值为 0、不能攻击、受一次攻击后下场、不给将军溢出伤害 */
+  guoshiInfo(pi) {
+    const p = this.state.players[pi];
+    const opp = this.state.players[1 - pi];
+    if (p.field.length > 0) return null;
+    if (p.hp >= opp.hp) return null;
+    if (p.field.length >= 5) return null;
+    const persons = this.state.discard.filter(d => d.type === "samurai");
+    if (!persons.length) return null;
+    return { ok: true };
+  },
+  guoshiSummon(pi) {
+    const st = this.state;
+    const p = st.players[pi];
+    if (!this.guoshiInfo(pi)) return false;
+    const persons = st.discard.filter(d => d.type === "samurai");
+    const pick = persons[Math.floor(Math.random() * persons.length)];
+    const di = st.discard.indexOf(pick);
+    st.discard.splice(di, 1);
+    const gu = this.newUnit(pi, "samurai", pick.card);
+    gu.baseAtk = 0; gu.baseDef = 0; // 所有数值均为 0
+    gu.guoshiGuard = true; // 国士无双盾：不可攻击、不给溢出、数值恒 0
+    gu.summonedTurn = st.turnNo;
+    p.field.push(gu);
+    this.castleL4OnUnitEnter(pi, gu);
+    if (UI.unitEnter) UI.unitEnter(gu.uid);
+    if (UI.guoshiEffect) UI.guoshiEffect(); // 中央特效：「国士无双」四字从上到下排开
+    this.log(`♟ 国士无双：${p.name} 战场区无牌且生命低于对方，从弃牌堆召唤盾武士【${gu.card.name}】（攻 0 防 0，不可攻击，受一次攻击下场，无溢出）`, p.isAI ? "ai" : "me", pick);
+    UI.renderAll();
+    return true;
+  },
+
   /* 玩家自行决定：将战场区单位下场（移入弃牌堆） */
   discardUnit(pi, uid) {
     const p = this.state.players[pi];
@@ -856,6 +983,13 @@ const Game = {
     if (!u) return false;
     this.state.discard.push({ type: u.kind, card: u.card });
     p.field = p.field.filter(x => x.uid !== uid);
+    // 装备随弃（骑具下场触发八百里分麾下炙）
+    for (const s of ["blade", "armor", "mount"]) if (u.eq && u.eq[s]) {
+      const eq = u.eq[s];
+      this.state.discard.push({ type: s, card: eq });
+      u.eq[s] = null;
+      if (s === "mount") this.mountLeaves(pi, eq);
+    }
     this.log(`${p.name} 将【${u.card.name}】自愿下场（移入弃牌堆）`);
     UI.renderAll();
     return true;
@@ -1068,15 +1202,52 @@ const Game = {
     } else this.log(`👑 ${q.name} 天皇换位：牌池已无可抽天皇`);
   },
 
+  /* 御·骑具之灵：天皇拥有「骑具之灵」轨道时，大名亦可装备骑具（破格） */
+  canMountOnDaimyo(pi) {
+    const em = this.state.players[pi].emperor;
+    return [em.t1, em.t2, em.t3].some(tr => tr.includes("骑具之灵"));
+  },
+  /* 御·兵刃之锐：天皇拥有「兵刃之锐」轨道时，公卿亦可装备兵刃（破格） */
+  canBladeOnNoble(pi) {
+    const em = this.state.players[pi].emperor;
+    return [em.t1, em.t2, em.t3].some(tr => tr.includes("兵刃之锐"));
+  },
+  /* 御·装具之固：天皇拥有「装具之固」轨道时，武士亦可装备装具（破格） */
+  canArmorOnSamurai(pi) {
+    const em = this.state.players[pi].emperor;
+    return [em.t1, em.t2, em.t3].some(tr => tr.includes("装具之固"));
+  },
+
   /* 装备 */
   equip(pi, hi, targetUid) {
     const p = this.state.players[pi];
     const c = p.hand[hi];
     const u = p.field.find(x => x.uid === targetUid);
     if (!u) { this.log("装备目标不存在，请重新选择"); return false; }
-    if (c.type === "blade" && (u.kind !== "daimyo" && u.kind !== "samurai")) { this.log("兵刃只能装备大名/武士"); return false; }
-    if (c.type === "armor" && (u.kind !== "daimyo" && u.kind !== "noble")) { this.log("装具只能装备大名/公卿"); return false; }
-    if (c.type === "mount" && (u.kind !== "noble" && u.kind !== "samurai")) { this.log("骑具只能装备公卿/武士"); return false; }
+    if (c.type === "blade" && (u.kind !== "daimyo" && u.kind !== "samurai")) {
+      if (u.kind === "noble" && this.canBladeOnNoble(pi)) {
+        // 御·兵刃之锐：天皇拥有该轨道 → 公卿可装备兵刃
+      } else {
+        this.log("兵刃只能装备大名/武士（天皇拥有御·兵刃之锐时，公卿亦可）");
+        return false;
+      }
+    }
+    if (c.type === "armor" && (u.kind !== "daimyo" && u.kind !== "noble")) {
+      if (u.kind === "samurai" && this.canArmorOnSamurai(pi)) {
+        // 御·装具之固：天皇拥有该轨道 → 武士可装备装具
+      } else {
+        this.log("装具只能装备大名/公卿（天皇拥有御·装具之固时，武士亦可）");
+        return false;
+      }
+    }
+    if (c.type === "mount" && (u.kind !== "noble" && u.kind !== "samurai")) {
+      if (u.kind === "daimyo" && this.canMountOnDaimyo(pi)) {
+        // 御·骑具之灵：天皇拥有该轨道 → 大名可装备骑具
+      } else {
+        this.log("骑具只能装备公卿/武士（天皇拥有御·骑具之灵时，大名亦可）");
+        return false;
+      }
+    }
     const slot = c.type;
     if (u.eq[slot]) { this.log("该单位已有同类装备"); return false; }
     p.hand.splice(hi, 1);
@@ -1409,7 +1580,12 @@ const Game = {
       if (this.state.zone && this.state.zone.type === "process") { this.zHist(this.state.zone, "被摧毁", "灾厄效果"); this.log(`事件【${this.state.zone.card.name}】被摧毁！`); this.state.discard.push(this.state.zone); this.state.zone = null; }
     } else if (c.type === "calamity" && fx.includes("骑具")) {
       let n = 0;
-      for (const q of this.state.players) for (const u of q.field) if (u.eq.mount) { u.eq.mount = null; n++; }
+      for (const q of this.state.players) for (const u of q.field) if (u.eq.mount) {
+        const mc = u.eq.mount;
+        u.eq.mount = null;
+        this.mountLeaves(this.state.players.indexOf(q), mc); // 八百里分麾下炙：骑具下场联动
+        n++;
+      }
       this.log(`摧毁双方骑具 ${n} 件`);
     } else if (c.type === "calamity" && fx.includes("兵刃") && fx.includes("装具")) {
       let n = 0;
@@ -1524,6 +1700,22 @@ const Game = {
 
   canAttackShogun(pi) { return this.state.players[pi].field.length === 0; },
 
+  /* 春秋义战：对方空场时，己方本回合可直击将军一次，且仅最高阶单位（大名＞公卿＞武士）可发动 */
+  duelStrikeEligible(pi) {
+    const p = this.state.players[pi];
+    const opp = this.state.players[1 - pi];
+    if (opp.field.length > 0) return { ok: false, why: "对方仍有单位，不能直接攻击将军" };
+    if (p.duelStrikeUsed) return { ok: false, why: "本回合已直击过将军（春秋义战·每回合一次）" };
+    // 最高阶：大名 > 公卿 > 武士
+    const hasD = p.field.some(u => u.kind === "daimyo" && !u.attackedThisTurn);
+    if (hasD) return { ok: true, kind: "daimyo" };
+    const hasN = p.field.some(u => u.kind === "noble" && !u.attackedThisTurn);
+    if (hasN) return { ok: true, kind: "noble" };
+    const hasS = p.field.some(u => u.kind === "samurai" && !u.attackedThisTurn);
+    if (hasS) return { ok: true, kind: "samurai" };
+    return { ok: false, why: "己方无人可发动直击（均攻击过或无单位）" };
+  },
+
   /* 城池第三层 · 概率倾斜：王城己方 +10% / 敌方 +5%；名城 己方 +5% / 敌方 −5%；大城 己方 +5% / 敌方 −5%（骑具/装具类） */
   probTilt(pi, kind) {
     const z = this.state.zone;
@@ -1553,6 +1745,8 @@ const Game = {
     if (p.typeAtk && p.typeAtk[u.kind]) { this.log(`本回合 ${KIND_CN[u.kind]} 已发动过攻击（每类型仅一位）`); return false; }
     // 每个单位本回合只能攻击一次（即使攻击被消解/替死等中断，该单位攻击次数也已耗尽）
     if (u.attackedThisTurn) { this.log(`【${u.card.name}】本回合已攻击过，攻击次数耗尽`); return false; }
+    // 国士无双盾武士：不能攻击
+    if (u.guoshiGuard) { this.log(`【${u.card.name}】国士无双盾武士不能攻击`); return false; }
     // 尊位·御破：被攻击方拥有「攻击失效」尊位时，攻击发生时弹出选择（每局一次，耗当前生命 1/10）
     if (!skipRank) {
       const defP = st.players[1 - pi];
@@ -1624,8 +1818,31 @@ const Game = {
 
     if (UI.shakeUnit) UI.shakeUnit(u.uid);
     if (target === "shogun") {
-      if (!bypass && !this.canAttackShogun(1 - pi)) { this.log("对方仍有单位，不能直接攻击将军（可用破阵越级）"); return false; }
+      if (!bypass) {
+        // 春秋义战：对方空场时，本回合仅最高阶单位可直击一次（判断攻击方 pi）
+        const duel = this.duelStrikeEligible(pi);
+        if (!duel.ok) { this.log(duel.why); return false; }
+        if (duel.kind === "daimyo" && u.kind !== "daimyo") { this.log(`春秋义战：己方有大名，仅大名可直击将军（${KIND_CN[u.kind]}不可）`); return false; }
+        if (duel.kind === "noble" && u.kind !== "noble") { this.log(`春秋义战：己方无大名有公卿，仅公卿可直击将军（${KIND_CN[u.kind]}不可）`); return false; }
+        if (duel.kind === "samurai" && u.kind !== "samurai") { this.log(`春秋义战：仅武士可直击将军`); return false; }
+        p.duelStrikeUsed = true; // 占用本回合唯一一次直击
+        if (UI.renderAll) UI.renderAll();
+      } else {
+        // 破阵越级攻击将军：不受春秋义战限制，但消耗该单位攻击次数
+        if (!this.canAttackShogun(1 - pi)) { this.log("对方仍有单位，不能直接攻击将军（可用破阵越级）"); return false; }
+      }
       const d = Math.random() * 100;
+      // 将军·义战之恩（通用被动，每回合一次）：对方成功激活春秋义战（非破阵直击），己方将军生命 −1
+      if (!bypass) {
+        const defP2 = st.players[1 - pi];
+        if (!defP2.gracePenaltyUsed) {
+          defP2.gracePenaltyUsed = true; // 每回合生效一次
+          defP2.hp -= 1;
+          this.hpEvent(1 - pi, 1, "义战之恩", defP2.hp);
+          this.log(`🛡 义战之恩：对方激活春秋义战，${defP2.name} 将军 −1 → HP ${defP2.hp}`, defP2.isAI ? "ai" : "me");
+          if (defP2.hp <= 0) { this.win(pi); return true; }
+        }
+      }
       if (d <= this.effDodge(1 - pi)) { this.log(`【${u.card.name}】直击将军：对方躲避成功（${this.effDodge(1 - pi)}%）`); }
       else {
         opp.hp -= s.atk;
@@ -1669,10 +1886,29 @@ const Game = {
     // 必定命中：攻击值点伤害
     const dmg = s.atk;
     if (t.kind === "daimyo") {
+      // 器魂之灭：大名命值低于 5 且装备兵刃 → 兵刃自动下场，为大名回复 5 点命值（受击结算前判定）
+      if (t.hp < 5 && t.eq.blade) {
+        const bc = t.eq.blade;
+        st.discard.push({ type: "blade", card: bc });
+        t.eq.blade = null;
+        t.hp = Math.min(20, t.hp + 5);
+        t.hist = t.hist || [];
+        t.hist.push({ t: st.turnNo, src: "器魂之灭", desc: `兵刃【${bc.name}】自动下场，大名命值 +5 → ${t.hp}` });
+        this.log(`🗡 器魂之灭：兵刃【${bc.name}】自动下场，大名【${t.card.name}】命值 +5 → ${t.hp}`);
+        if (UI.flashUnit) UI.flashUnit(1 - pi, t.uid);
+      }
       const remain = t.hp - dmg;
       if (remain <= 0) {
         const diePath = () => {
-          const overflow = Math.max(0, dmg - t.hp);
+          let overflow = Math.max(0, dmg - t.hp);
+          // 装具·名器：大名装备装具时，被击破有 30% 几率令将军免受此次（溢出）伤害
+          if (t.eq.armor && overflow > 0 && Math.random() * 100 < 30) {
+            const ac = t.eq.armor;
+            t.hist = t.hist || [];
+            t.hist.push({ t: this.state.turnNo, src: "名器", desc: `装具【${ac.name}】名器发动：将军免受溢出伤害 ${overflow}` });
+            this.log(`✨ 名器【${ac.name}】：30% 判定成功，将军免受此次溢出伤害 ${overflow} 点！`);
+            overflow = 0;
+          }
           t.alive = false; t.defeated = true;
           t.hist = t.hist || [];
           t.hist.push({ t: this.state.turnNo, src: "击破", desc: `被【${u.card.name}】攻${s.atk} 击破（命值 ${t.hp}→${remain}，溢出 ${overflow}）` });
@@ -1695,7 +1931,7 @@ const Game = {
       const remain = ts.def - dmg;
       if (remain <= 0) {
         const diePath = () => {
-          const overflow = Math.max(0, dmg - ts.def);
+          const overflow = t.guoshiGuard ? 0 : Math.max(0, dmg - ts.def); // 国士无双盾：不给将军溢出伤害
           t.hist = t.hist || [];
           t.hist.push({ t: this.state.turnNo, src: "击破", desc: `被【${u.card.name}】攻${s.atk} 击破（防${ts.def}，溢出 ${overflow}）` });
           this.log(`【${u.card.name}】（攻${s.atk}）击破武士【${t.card.name}】（防${ts.def}）！`);
@@ -1941,6 +2177,72 @@ const Game = {
     this.state._diluEnd.push(u.uid);
   },
 
+  /* 八百里分麾下炙（骑具下场联动）：骑具被弃置（下场）时按双方将军生命差结算
+     己方生命低于对方 → 生命值 +（差值÷2）
+     己方生命高于对方 → 舍弃一张手牌；无手牌则生命值 −（差值÷2） */
+  mountLeaves(pi, mountCard) {
+    const st = this.state;
+    const p = st.players[pi];
+    const opp = st.players[1 - pi];
+    const nm = (mountCard && mountCard.name) || "骑具";
+    if (p.hp < opp.hp) {
+      const diff = opp.hp - p.hp;
+      const heal = Math.floor(diff / 2);
+      p.hp = Math.min(p.maxHp || 100, p.hp + heal);
+      this.hpEvent(pi, -heal, "八百里分麾下炙", p.hp);
+      this.log(`🐎 八百里分麾下炙【${nm}】下场：己方生命低于对方，回复差值一半 ${heal} → HP ${p.hp}`, p.isAI ? "ai" : "me");
+    } else if (p.hp > opp.hp) {
+      if (p.hand.length) {
+        const c = p.hand.pop();
+        st.discard.push(c);
+        this.eHist(pi, "八百里分麾下炙", `舍弃手牌【${this.cardName(c)}】`);
+        this.log(`🐎 八百里分麾下炙【${nm}】下场：己方生命高于对方，舍弃手牌【${this.cardName(c)}】`, p.isAI ? "ai" : "me", c);
+      } else {
+        const diff = p.hp - opp.hp;
+        const dmg = Math.floor(diff / 2);
+        p.hp -= dmg;
+        this.hpEvent(pi, dmg, "八百里分麾下炙", p.hp);
+        this.log(`🐎 八百里分麾下炙【${nm}】下场：己方生命高于对方且无手牌，生命 −${dmg} → HP ${p.hp}`, p.isAI ? "ai" : "me");
+        if (p.hp <= 0) this.win(1 - pi);
+      }
+    }
+    // 双方生命相等 → 不结算
+    UI.renderAll();
+  },
+
+  /* 装具·熔炉（主动，每回合一次）：己方生命低于对方时，可将一件装具下场，回复差值的一半 */
+  forgeInfo(pi) {
+    const p = this.state.players[pi];
+    const opp = this.state.players[1 - pi];
+    if (p.forgeUsed) return { blocked: "本回合已使用过熔炉" };
+    if (p.hp >= opp.hp) return { blocked: "需己方生命低于对方" };
+    const armors = [];
+    for (const u of p.field) if (u.eq && u.eq.armor) armors.push(u);
+    if (!armors.length) return { blocked: "己方场上无装具可下场" };
+    const diff = opp.hp - p.hp;
+    return { ok: true, armors, diff, heal: Math.floor(diff / 2) };
+  },
+  useForge(pi, uid) {
+    const st = this.state;
+    const p = st.players[pi];
+    const opp = st.players[1 - pi];
+    const info = this.forgeInfo(pi);
+    if (!info || !info.ok) { this.log("熔炉当前不可用"); return false; }
+    const holder = info.armors.find(u => u.uid === uid) || info.armors[0];
+    const ac = holder.eq.armor;
+    st.discard.push({ type: "armor", card: ac });
+    holder.eq.armor = null;
+    holder.hist = holder.hist || [];
+    holder.hist.push({ t: st.turnNo, src: "熔炉", desc: `装具【${ac.name}】下场，将军回复差值一半 ${info.heal}` });
+    p.hp = Math.min(p.maxHp || 100, p.hp + info.heal);
+    this.hpEvent(pi, -info.heal, "装具·熔炉", p.hp);
+    p.forgeUsed = true;
+    this.eHist(pi, "装具·熔炉", `弃【${ac.name}】，回复 ${info.heal}`);
+    this.log(`🔥 装具·熔炉：${p.name} 生命低于对方，弃置装具【${ac.name}】，回复差值一半 ${info.heal} → HP ${p.hp}`, p.isAI ? "ai" : "me");
+    UI.renderAll();
+    return true;
+  },
+
   /* 的卢之魂 · 效果 3：己方生命低于对方时，骑具可为装备它的单位替死一次（玩家弹窗选择，AI 自动） */
   diluSacrifice(t, diePath) {
     const st = this.state;
@@ -1954,6 +2256,7 @@ const Game = {
       t.hist = t.hist || [];
       t.hist.push({ t: st.turnNo, src: "的卢之魂", desc: `骑具【${m.name}】替死一次（己方生命低于对方）` });
       this.log(`🐎 的卢之魂【${m.name}】：己方生命低于对方，骑具替【${t.card.name}】死一次，单位存活`);
+      this.mountLeaves(t.pi, m); // 八百里分麾下炙：骑具下场联动
       return true;
     };
     if (t.pi === 0) {
@@ -2170,6 +2473,13 @@ const Game = {
       if (UI.flashDiscard) UI.flashDiscard();
       p.field.splice(i, 1);
       this.castleL4OnUnitGone(u);
+      // 单位离场：装备随之一同弃置（骑具下场触发八百里分麾下炙）
+      for (const s of ["blade", "armor", "mount"]) if (u.eq && u.eq[s]) {
+        const eq = u.eq[s];
+        this.state.discard.push({ type: s, card: eq });
+        u.eq[s] = null;
+        if (s === "mount") this.mountLeaves(u.pi, eq);
+      }
     }
     // 宝物指定目标离场 → 清除（下场后可重指）
     for (const q of this.state.players) {
@@ -2251,6 +2561,7 @@ const Game = {
           st.discard.push({ type: "mount", card: m });
           u.eq.mount = null;
           this.log(`🐎 的卢之魂【${m.name}】回合结束下场`);
+          this.mountLeaves(st.players.indexOf(p), m); // 八百里分麾下炙：骑具下场联动
         }
       }
       st._diluEnd = [];
@@ -2344,9 +2655,9 @@ const Game = {
       const idx = p.hand.findIndex(c => c.type === slot);
       if (idx < 0) continue;
       const card = p.hand[idx];
-      const elig = slot === "blade" ? (x => (x.kind === "daimyo" || x.kind === "samurai") && !x.eq.blade)
-        : slot === "mount" ? (x => (x.kind === "samurai" || x.kind === "noble") && !x.eq.mount)
-        : (x => (x.kind === "daimyo" || x.kind === "noble") && !x.eq.armor);
+      const elig = slot === "blade" ? (x => (x.kind === "daimyo" || x.kind === "samurai" || (x.kind === "noble" && this.canBladeOnNoble(1))) && !x.eq.blade)
+        : slot === "mount" ? (x => (x.kind === "samurai" || x.kind === "noble" || (x.kind === "daimyo" && this.canMountOnDaimyo(1))) && !x.eq.mount)
+        : (x => (x.kind === "daimyo" || x.kind === "noble" || (x.kind === "samurai" && this.canArmorOnSamurai(1))) && !x.eq.armor);
       const target = p.field.find(elig);
       if (target) {
         push("装备", () => {

@@ -365,6 +365,40 @@ const UI = {
           UI.showModal("👑 尊位 · 将军特权（每局一次，耗当前生命 1/10）", body, btns2);
         }));
       }
+      // 帝王之征（逆境特惠，每局各一次）：条件达成时显示按钮，否则隐藏
+      const impInfo = Game.imperialInfo(0);
+      if (impInfo.length) {
+        const usable = impInfo.filter(x => x.ok);
+        if (usable.length) {
+          const labels = usable.map(x => x.label).join(" ｜ ");
+          btns.appendChild(mk(`👑 帝王之征（${usable.length} 项可用）`, () => {
+            const body = document.createElement("div");
+            body.innerHTML = `<div style="margin-bottom:8px;line-height:1.7">选择一项帝王之征发动（每局各一次）：</div>`;
+            const btns2 = usable.map(x => ({
+              label: x.label,
+              cls: "primary",
+              fn: () => { Game.useImperial(0, x.kind); UI.hideModal(); UI.renderAll(); },
+            }));
+            btns2.push({ label: "取消", fn: () => UI.hideModal() });
+            UI.showModal("👑 帝王之征 · 逆境特惠", body, btns2);
+          }));
+        } // 条件不够 → 隐藏
+      }
+      // 装具·熔炉（主动，每回合一次）：条件达成时显示按钮，否则隐藏
+      const forgeInfo = Game.forgeInfo(0);
+      if (forgeInfo && forgeInfo.ok) {
+        btns.appendChild(mk(`🔥 熔炉（回复${forgeInfo.heal}，弃一件装具）`, () => {
+          const body = document.createElement("div");
+          body.innerHTML = `<div style="margin-bottom:8px;line-height:1.7">己方生命低于对方，可将一件装具下场，回复差值的一半（<b>${forgeInfo.heal}</b> 点）。<br>选择要下场的装具：</div>`;
+          const btns2 = forgeInfo.armors.map(u => ({
+            label: `${KIND_CN[u.kind]}【${u.card.name}】· ${u.eq.armor.name}`,
+            cls: "primary",
+            fn: () => { Game.useForge(0, u.uid); UI.hideModal(); UI.renderAll(); },
+          }));
+          btns2.push({ label: "取消", fn: () => UI.hideModal() });
+          UI.showModal("🔥 装具·熔炉（每回合一次）", body, btns2);
+        }, false, "primary"));
+      } // 条件不够 → 隐藏
       // 事件·暗杀（右上角手动发动）：条件允许才显示，否则隐藏
       const aiInfo = Game.assassinInfo(0);
       if (aiInfo && aiInfo.cost) {
@@ -701,7 +735,8 @@ const UI = {
       el.addEventListener("click", () => {
         const upi = parseInt(el.dataset.pi);
         if (this.combatMode && upi === 1 && this.selectedAttacker != null) {
-          if (Game.canAttackShogun(1) || this.bypass) {
+          const duel = Game.duelStrikeEligible(0); // 攻击方是玩家(pi=0)
+          if (this.bypass ? Game.canAttackShogun(1) : (duel && duel.ok)) {
             const r = Game.attack(0, this.selectedAttacker, "shogun", this.bypass);
             if (r === true) {
               this.selectedAttacker = null; this.aimFromUid = null;
@@ -711,7 +746,7 @@ const UI = {
             }
             this.renderAll();
           } else {
-            this.logHint("对方场上仍有单位，不能直击将军（可用破阵越级）！");
+            this.logHint((duel && duel.why) || "对方场上仍有单位，不能直击将军（可用破阵越级）！");
           }
           return;
         }
@@ -759,6 +794,19 @@ const UI = {
           if (u0.attackedThisTurn) {
             this.logHint(`【${u0.card.name}】本回合已攻击过，攻击次数耗尽`);
             return;
+          }
+          // 春秋义战：对方空场时，仅最高阶单位（大名＞公卿＞武士）可发动直击
+          if (st.players[1].field.length === 0 && !this.bypass) {
+            const duel = Game.duelStrikeEligible(0);
+            if (duel && duel.ok && duel.kind !== u0.kind) {
+              const order = { daimyo: "大名", noble: "公卿", samurai: "武士" };
+              this.logHint(`春秋义战：对方空场，仅${order[duel.kind]}可直击将军，${KIND_CN[u0.kind]}不可`);
+              return;
+            }
+            if (duel && !duel.ok) {
+              this.logHint(duel.why);
+              return;
+            }
           }
           this.selectedAttacker = uid;
           this.aimFromUid = uid;
@@ -1144,7 +1192,7 @@ const UI = {
         ["第五层·自动", "⚙ 上场 +1 攻／下场 +1 防", "passive"],
       ]);
     } else if (t === "blade") {
-      html += this.fxLine("装备目标", "仅限己方大名、武士"); html += this.fxLine("效果", `攻击 +${cd.atk}`);
+      html += this.fxLine("装备目标", "仅限己方大名、武士（天皇拥有御·兵刃之锐时，公卿亦可）"); html += this.fxLine("效果", `攻击 +${cd.atk}`);
       if (cd.soul) {
         const soulDesc = {
           1: "己方将军生命值低于对方时，攻击值 +1",
@@ -1155,13 +1203,16 @@ const UI = {
         };
         html += this.fxLine("器魂", soulDesc[cd.soul]);
       }
+      html += this.fxLine("器魂之灭（通用）", "装备于大名时：大名命值低于 5 的瞬间，兵刃自动下场（弃置），为大名回复 5 点命值");
       html += this.fxLine("成长", `装备单位每次攻击后掷骰，${cd.grow}% 概率攻击加成 +1（永久）`);
     } else if (t === "armor") {
-      html += this.fxLine("装备目标", "仅限己方大名、公卿"); html += this.fxLine("效果", `防御 +${cd.dfs}`);
+      html += this.fxLine("装备目标", "仅限己方大名、公卿（天皇拥有御·装具之固时，武士亦可）"); html += this.fxLine("效果", `防御 +${cd.dfs}`);
       if (cd.synX) html += this.fxLine("配套", `X=${cd.synX}，Y=${cd.synY}：装备对象若有兵刃 → 防御 +X；若有骑具 → 防御 −Y 且将军生命 +1/10；若兵刃骑具俱在 → 50% 防御+X 生命−X／50% 防御−Y 生命+Y`);
+      html += this.fxLine("名器（通用）", "装备于大名时：该大名下场（被击破），30% 几率令将军免受此次（溢出）伤害");
+      html += this.fxLine("熔炉（通用）", "己方生命低于对方时，可将一件装具下场，回复差值的一半（右上角按钮，条件达成时出现）");
       html += this.fxLine("成长", `装备单位每次被攻击后掷骰，${cd.grow}% 概率防御加成 +1（永久）`);
     } else if (t === "mount") {
-      html += this.fxLine("装备目标", "仅限己方公卿、武士"); html += this.fxLine("效果", `被攻击时 ${cd.dodge}% 概率躲避本次攻击`);
+      html += this.fxLine("装备目标", "仅限己方公卿、武士（天皇拥有御·骑具之灵时，大名亦可装备）"); html += this.fxLine("效果", `被攻击时 ${cd.dodge}% 概率躲避本次攻击`);
       if (cd.soul) {
         const diluDesc = {
           1: "己方将军生命低于对方时，躲避率随机 +5%～10%",
@@ -1170,6 +1221,7 @@ const UI = {
         };
         html += this.fxLine("的卢之魂", diluDesc[cd.soul]);
       }
+      html += this.fxLine("八百里分麾下炙（通用）", "骑具下场时：己方生命低于对方 → 将军生命 +差值一半；高于对方 → 舍弃一张手牌（无手牌则生命 −差值一半）");
     } else if (t === "sacred") {
       html += this.fxLine("第一层·消解", "可在对方攻击结算前响应使用，令该次单位攻击无效化；代价：本回合及下一回合不能攻击（仅实际消解成功时支付）");
       html += this.fxLine("第二层·神迹", cd.fx + (cd.cond ? `（生命条件【${cd.cond === "A" ? "A" : "B"}】：${cd.cond === "A" ? "己方生命高于对方时直接生效" : "己方生命低于对方时直接生效"}）` : ""));
@@ -1192,7 +1244,7 @@ const UI = {
       ]);
     } else if (t === "emperors") {
       const TRACK_DESC = {
-        "将军之佑": "每回合己方回合开始，己方将军生命 +X（不超过上限）",
+        "将军之佑": "每回合己方回合开始，己方将军生命 +X（不超过上限；己方场上有大名时不生效）",
         "武士之锋": "己方所有武士攻击值 +X（持续光环）",
         "公卿之智": "己方所有公卿特效数值 +X（持续光环）",
         "事件之速": "当前事件为己方时：给予对方总生命 1/10 伤害（每局一次）；当前事件为对方时：夺取对方一名武士（每局一次）",
@@ -1704,6 +1756,16 @@ const UI = {
     this.aimFromUid = null;
     const svg = document.getElementById("aimLine");
     if (svg) svg.style.display = "none";
+  },
+
+  /* 国士无双：中央四分之一区域特效，「国士无双」四字从上到下排开 */
+  guoshiEffect() {
+    const overlay = document.createElement("div");
+    overlay.className = "guoshi-overlay";
+    // 四字竖排（从上到下）
+    overlay.innerHTML = `<div class="guoshi-word">国</div><div class="guoshi-word">士</div><div class="guoshi-word">无</div><div class="guoshi-word">双</div>`;
+    document.body.appendChild(overlay);
+    setTimeout(() => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 4100);
   },
 
   /* ---------- 重新开局 ---------- */
