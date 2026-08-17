@@ -1284,6 +1284,22 @@ const UI = {
     ]);
   },
 
+  /* 公卿城池加成替死：玩家选择是否发动（条件满足时弹出） */
+  askCastleSacrifice(info, cb) {
+    this.showModal("🏰 公卿城池加成 · 替死", `【${info.noble.card.name}】的城池加成可替你挡下这次击破！<br><b>${info.desc}</b><br><span style="color:#ff9a8a">城池加成在城池被顶替前实时生效。</span>`, [
+      { label: "发动替死", cls: "primary", fn: () => { this.hideModal(); cb(true); } },
+      { label: "放弃（承受击破）", fn: () => { this.hideModal(); cb(false); } },
+    ]);
+  },
+
+  /* 的卢之魂替死：玩家选择是否用骑具替单位挡死 */
+  askDiluSacrifice(t, m, cb) {
+    this.showModal("🐎 的卢之魂 · 替死", `骑具【<b>${m.name}</b>】愿替【${t.card.name}】（${KIND_CN[t.kind]}）挡下这次击破！<br><span style="color:#ff9a8a">条件：己方将军生命低于对方。发动后骑具弃置，单位存活。</span>`, [
+      { label: "发动替死", cls: "primary", fn: () => { this.hideModal(); cb(true); } },
+      { label: "放弃（承受击破）", fn: () => { this.hideModal(); cb(false); } },
+    ]);
+  },
+
   /* 圣迹抵消：对方使用圣迹时，询问是否用手上灾厄抵消 */
   askCounterSacred(c, cb) {
     this.showModal("💀 灾厄抵消圣迹", `对方正在使用圣迹【<b>${c.card.name}</b>】（${c.card.fx || ""}）。<br>是否使用手上的一张<b>灾厄牌</b>抵消？<span style="color:#ff9a8a">两张牌都将进入弃牌堆，均不生效。</span>`, [
@@ -1782,10 +1798,21 @@ const UI = {
   init() {
     this.el("modal").addEventListener("click", e => { if (e.target.id === "modal") this.hideModal(); });
     document.addEventListener("mousemove", (e) => UI.updateAimLine(e));
+    document.addEventListener("touchmove", (e) => { if (e.touches && e.touches[0]) UI.updateAimLine(e.touches[0]); }, { passive: true }); // 手机端瞄准线
     document.addEventListener("mouseup", (e) => {
       if (UI.aimFromUid != null && e.target.closest && !e.target.closest(".unit-card, .avatar-card")) UI.hideAimLine();
       // 点空白取消装备/献祭模式（防残留导致指令冲突）
       if ((UI.mode === "equip" || UI.mode === "sacrifice") && e.target.closest && !e.target.closest(".unit-card, .hand-card, .avatar-card")) {
+        UI.mode = "idle"; UI.eqHandIdx = -1; UI.sacTarget = -1;
+        UI.renderAll();
+      }
+    });
+    document.addEventListener("touchend", (e) => {
+      // 手机端：触碰空白取消瞄准/装备/献祭
+      const t = e.changedTouches && e.changedTouches[0];
+      const el = t && document.elementFromPoint(t.clientX, t.clientY);
+      if (UI.aimFromUid != null && el && !el.closest(".unit-card, .avatar-card")) UI.hideAimLine();
+      if ((UI.mode === "equip" || UI.mode === "sacrifice") && el && !el.closest(".unit-card, .hand-card, .avatar-card")) {
         UI.mode = "idle"; UI.eqHandIdx = -1; UI.sacTarget = -1;
         UI.renderAll();
       }

@@ -338,6 +338,16 @@ const Game = {
       atk += v; def += v;
       AP.push({ k: "事件第一层·" + (own ? "己方" : "敌方"), v }); DP.push({ k: "事件第一层·" + (own ? "己方" : "敌方"), v });
     }
+    // 大名第一层 · 动态数量（通用）：己方武士多于对方 → 大名攻击 +1；己方公卿多于对方 → 大名防御 +1
+    if (u.kind === "daimyo") {
+      const opp = st.players[1 - pi];
+      const mySam = p.field.filter(x => x.kind === "samurai").length;
+      const opSam = opp.field.filter(x => x.kind === "samurai").length;
+      if (mySam > opSam) { atk += 1; AP.push({ k: "大名第一层·武士优势", v: 1 }); }
+      const myNob = p.field.filter(x => x.kind === "noble").length;
+      const opNob = opp.field.filter(x => x.kind === "noble").length;
+      if (myNob > opNob) { def += 1; DP.push({ k: "大名第一层·公卿优势", v: 1 }); }
+    }
     // 公卿光环（① 攻击 ② 防御 ③ 兵刃 ④ 装具 ⑤ 骑具；含公卿之智）
     for (const u2 of p.field) {
       if (u2.kind !== "noble") continue;
@@ -1601,13 +1611,19 @@ const Game = {
     if (t.kind === "daimyo") {
       const remain = t.hp - dmg;
       if (remain <= 0) {
-        const overflow = Math.max(0, dmg - t.hp);
-        t.alive = false; t.defeated = true;
-        t.hist = t.hist || [];
-        t.hist.push({ t: this.state.turnNo, src: "击破", desc: `被【${u.card.name}】攻${s.atk} 击破（命值 ${t.hp}→${remain}，溢出 ${overflow}）` });
-        this.log(`【${u.card.name}】（攻${s.atk}）击破大名【${t.card.name}】（命值 ${t.hp}→${remain}）！`);
-        this.overflowToShogun(1 - pi, overflow);
-        this.removeUnit(t);
+        const diePath = () => {
+          const overflow = Math.max(0, dmg - t.hp);
+          t.alive = false; t.defeated = true;
+          t.hist = t.hist || [];
+          t.hist.push({ t: this.state.turnNo, src: "击破", desc: `被【${u.card.name}】攻${s.atk} 击破（命值 ${t.hp}→${remain}，溢出 ${overflow}）` });
+          this.log(`【${u.card.name}】（攻${s.atk}）击破大名【${t.card.name}】（命值 ${t.hp}→${remain}）！`);
+          this.overflowToShogun(1 - pi, overflow);
+          this.removeUnit(t);
+        };
+        const cs = this.castleSacrificeFlow(1 - pi, t, diePath); // 公卿城池加成替死（弹窗/自动）
+        if (cs === "pending") return true;
+        if (cs === true) { this.afterAttack(p, u, t); UI.renderAll(); return true; }
+        diePath();
       } else {
         t.hp = remain;
         t.hist = t.hist || [];
@@ -1618,7 +1634,6 @@ const Game = {
     } else if (t.kind === "samurai") {
       const remain = ts.def - dmg;
       if (remain <= 0) {
-        if (this.diluSacrifice(t)) { this.afterAttack(p, u, t); UI.renderAll(); return true; } // 的卢之魂替死
         const diePath = () => {
           const overflow = Math.max(0, dmg - ts.def);
           t.hist = t.hist || [];
@@ -1627,6 +1642,12 @@ const Game = {
           this.overflowToShogun(1 - pi, overflow);
           this.removeUnit(t);
         };
+        const cs = this.castleSacrificeFlow(1 - pi, t, diePath); // 公卿城池加成替死（弹窗/自动）
+        if (cs === "pending") return true;
+        if (cs === true) { this.afterAttack(p, u, t); UI.renderAll(); return true; }
+        const dilu = this.diluSacrifice(t, diePath); // 的卢之魂替死（弹窗/自动；放弃则继续击破）
+        if (dilu === "pending") return true;
+        if (dilu === true) { this.afterAttack(p, u, t); UI.renderAll(); return true; }
         if (this.canPurge(1 - pi, "samurai")) {
           const cost = st.players[1 - pi].emperor.ps;
           this.askPurge(t, cost, (use) => {
@@ -1650,7 +1671,6 @@ const Game = {
     } else if (t.kind === "noble") {
       const remain = ts.atk - dmg;
       if (remain <= 0) {
-        if (this.diluSacrifice(t)) { this.afterAttack(p, u, t); UI.renderAll(); return true; } // 的卢之魂替死
         const diePath = () => {
           const overflow = Math.max(0, dmg - ts.atk);
           t.hist = t.hist || [];
@@ -1659,6 +1679,12 @@ const Game = {
           this.overflowToShogun(1 - pi, overflow);
           this.removeUnit(t);
         };
+        const cs = this.castleSacrificeFlow(1 - pi, t, diePath); // 公卿城池加成替死（弹窗/自动）
+        if (cs === "pending") return true;
+        if (cs === true) { this.afterAttack(p, u, t); UI.renderAll(); return true; }
+        const dilu = this.diluSacrifice(t, diePath); // 的卢之魂替死（弹窗/自动；放弃则继续击破）
+        if (dilu === "pending") return true;
+        if (dilu === true) { this.afterAttack(p, u, t); UI.renderAll(); return true; }
         if (this.canPurge(1 - pi, "noble")) {
           const cost = st.players[1 - pi].emperor.pn;
           this.askPurge(t, cost, (use) => {
@@ -1855,19 +1881,147 @@ const Game = {
     this.state._diluEnd.push(u.uid);
   },
 
-  /* 的卢之魂 · 效果 3：己方生命低于对方时，骑具可为装备它的单位替死一次 */
-  diluSacrifice(t) {
+  /* 的卢之魂 · 效果 3：己方生命低于对方时，骑具可为装备它的单位替死一次（玩家弹窗选择，AI 自动） */
+  diluSacrifice(t, diePath) {
     const st = this.state;
     const m = t.eq.mount;
     if (!m || m.soul !== 3) return false;
     const p = st.players[t.pi], opp = st.players[1 - t.pi];
     if (p.hp >= opp.hp) return false; // 条件不满足
-    st.discard.push({ type: "mount", card: m });
-    t.eq.mount = null;
-    t.hist = t.hist || [];
-    t.hist.push({ t: st.turnNo, src: "的卢之魂", desc: `骑具【${m.name}】替死一次（己方生命低于对方）` });
-    this.log(`🐎 的卢之魂【${m.name}】：己方生命低于对方，骑具替【${t.card.name}】死一次，单位存活`);
-    return true;
+    const doIt = () => {
+      st.discard.push({ type: "mount", card: m });
+      t.eq.mount = null;
+      t.hist = t.hist || [];
+      t.hist.push({ t: st.turnNo, src: "的卢之魂", desc: `骑具【${m.name}】替死一次（己方生命低于对方）` });
+      this.log(`🐎 的卢之魂【${m.name}】：己方生命低于对方，骑具替【${t.card.name}】死一次，单位存活`);
+      return true;
+    };
+    if (t.pi === 0) {
+      st.prompting = true;
+      UI.askDiluSacrifice(t, m, (use) => {
+        st.prompting = false;
+        if (use) { doIt(); UI.renderAll(); }
+        else if (diePath) { diePath(); UI.renderAll(); }
+        else UI.renderAll();
+      });
+      return "pending";
+    }
+    return doIt();
+  },
+
+  /* 公卿城池加成（castle 六选一）：条件检查（不执行）
+     ① 己方王城·替大名：弃置该公卿，大名存活
+     ② 己方名城·替公卿：弃置己方一位武士，该公卿存活
+     ③ 己方大城·替武士：弃置该武士一件装备（兵刃/骑具），武士存活
+     ④ 敌方王城·装备替死：弃置该大名/公卿一件装备，存活但攻防减半
+     ⑤ 敌方名城·装备替死：弃置该武士一件装备（兵刃/骑具），存活但数值减半
+     ⑥ 敌方大城·将军替死：扣己方将军 10 点生命（不足则不可），该公卿存活 */
+  castleSacrificeInfo(defPi, t) {
+    const st = this.state;
+    const defP = st.players[defPi];
+    const z = st.zone;
+    if (!z || z.type !== "castle") return null;
+    const own = z.owner === defPi;
+    const tier = z.card.tier;
+    const noble = defP.field.find(x => x.kind === "noble" && x.card.castle);
+    if (!noble) return null;
+    const c = noble.card.castle;
+    const KIND_CN2 = { samurai: "武士", noble: "公卿", daimyo: "大名" };
+    if (own && tier === "王城" && c.includes("①") && t.kind === "daimyo") {
+      return { ok: true, kind: 1, noble, desc: `弃置公卿【${noble.card.name}】，大名【${t.card.name}】存活` };
+    }
+    if (own && tier === "名城" && c.includes("②") && t.kind === "noble") {
+      const w = defP.field.find(x => x.kind === "samurai");
+      if (!w) return null;
+      return { ok: true, kind: 2, noble, w, desc: `弃置武士【${w.card.name}】，公卿【${t.card.name}】存活` };
+    }
+    if (own && tier === "大城" && c.includes("③") && t.kind === "samurai") {
+      if (!t.eq.blade && !t.eq.mount) return null;
+      return { ok: true, kind: 3, noble, desc: `弃置${t.eq.blade ? "兵刃" : "骑具"}，武士【${t.card.name}】存活` };
+    }
+    if (!own && tier === "王城" && c.includes("④") && (t.kind === "daimyo" || t.kind === "noble")) {
+      if (!t.eq.blade && !t.eq.armor && !t.eq.mount) return null;
+      return { ok: true, kind: 4, noble, desc: `弃置装备，${KIND_CN2[t.kind]}【${t.card.name}】存活（攻防减半）` };
+    }
+    if (!own && tier === "名城" && c.includes("⑤") && t.kind === "samurai") {
+      if (!t.eq.blade && !t.eq.mount) return null;
+      return { ok: true, kind: 5, noble, desc: `弃置装备，武士【${t.card.name}】存活（数值减半）` };
+    }
+    if (!own && tier === "大城" && c.includes("⑥") && t.kind === "noble") {
+      if (defP.hp <= 10) return null;
+      return { ok: true, kind: 6, noble, desc: `扣将军 10 生命，公卿【${t.card.name}】存活` };
+    }
+    return null;
+  },
+  /* 执行公卿城池加成替死（info 由 castleSacrificeInfo 提供） */
+  doCastleSacrifice(defPi, t, info) {
+    const st = this.state;
+    const defP = st.players[defPi];
+    const noble = info.noble;
+    const sacLog = (desc) => {
+      t.hist = t.hist || [];
+      t.hist.push({ t: st.turnNo, src: "公卿城池加成", desc });
+      this.log(`🏰 公卿【${noble.card.name}】城池加成：${desc}`);
+    };
+    if (info.kind === 1) {
+      const i = defP.field.indexOf(noble);
+      if (i >= 0) defP.field.splice(i, 1);
+      sacLog(info.desc);
+      return true;
+    }
+    if (info.kind === 2) {
+      const i = defP.field.indexOf(info.w);
+      if (i >= 0) defP.field.splice(i, 1);
+      sacLog(info.desc);
+      return true;
+    }
+    if (info.kind === 3) {
+      const slot = t.eq.blade ? "blade" : "mount";
+      st.discard.push({ type: slot, card: t.eq[slot] });
+      t.eq[slot] = null;
+      t.hist = t.hist || [];
+      t.hist.push({ t: st.turnNo, src: "公卿城池加成", desc: `弃置${TYPE_CN[slot]}替死` });
+      sacLog(info.desc);
+      return true;
+    }
+    if (info.kind === 4 || info.kind === 5) {
+      const slot = t.eq.blade ? "blade" : t.eq.armor ? "armor" : "mount";
+      st.discard.push({ type: slot, card: t.eq[slot] });
+      t.eq[slot] = null;
+      t.baseAtk = Math.max(1, Math.ceil(t.baseAtk / 2));
+      t.baseDef = Math.max(1, Math.ceil(t.baseDef / 2));
+      t.hist = t.hist || [];
+      t.hist.push({ t: st.turnNo, src: "公卿城池加成", desc: "装备替死存活，攻防减半" });
+      sacLog(info.desc);
+      return true;
+    }
+    if (info.kind === 6) {
+      defP.hp -= 10;
+      this.hpEvent(defPi, 10, "公卿城池加成·将军替死", defP.hp, false);
+      sacLog(info.desc);
+      return true;
+    }
+    return false;
+  },
+  /* 替死流程：防守方是玩家 → 弹窗选择；是 AI → 自动判定（单位价值高或损失小时使用） */
+  castleSacrificeFlow(defPi, t, diePath) {
+    const info = this.castleSacrificeInfo(defPi, t);
+    if (!info) return false;
+    const st = this.state;
+    const useIt = () => { this.doCastleSacrifice(defPi, t, info); UI.renderAll(); return true; };
+    if (defPi === 0) {
+      // 玩家：弹窗选择
+      st.prompting = true;
+      UI.askCastleSacrifice(info, (use) => {
+        st.prompting = false;
+        if (use) { this.doCastleSacrifice(defPi, t, info); UI.renderAll(); }
+        else { diePath(); UI.renderAll(); }
+      });
+      return "pending";
+    }
+    // AI：自动判定——⑥ 扣血较多（hp 充裕才用）；其余损失小（弃公卿/武士/装备）价值划算时用
+    if (info.kind === 6) return st.players[1].hp > 30 ? useIt() : false;
+    return useIt();
   },
 
   /* 城池两种增幅（每张每局仅一次）：放置时一次性结算 */

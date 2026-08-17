@@ -572,3 +572,93 @@ body { overflow-x: hidden; }
 
 
 
+
+/* ═══════════════════════════════════════════════
+   手机端适配（≤640px）：触屏友好、单列堆叠
+   ═══════════════════════════════════════════════ */
+@media (max-width: 640px) {
+  #app { padding: 6px 8px 16px; }
+  .title { font-size: 17px; letter-spacing: 1px; }
+  .phase-info { font-size: 12px; padding: 4px 8px; }
+  #topButtons { gap: 6px; }
+  button { font-size: 13px; padding: 8px 12px; border-radius: 10px; } /* 更大触控目标 */
+  button.small { font-size: 12px; padding: 6px 9px; }
+
+  /* 化身卡缩小 */
+  .avatar-card { width: 92px; padding: 5px; }
+  .avatar-card .role { font-size: 10px; }
+  .avatar-card .nm { font-size: 12px; }
+  .avatar-card .info { font-size: 10px; line-height: 1.35; }
+  .hp-text { font-size: 11px; }
+
+  /* 战场区：5 列紧凑网格 */
+  .battlefield { min-width: 0; flex: 1 1 100%; }
+  .bf-slots { grid-template-columns: repeat(5, 1fr); gap: 4px; min-height: 84px; }
+  .bf-slot { min-height: 82px; border-radius: 8px; }
+  .unit-card { padding: 3px 2px; }
+  .u-portrait { display: none; } /* 手机端隐藏画像，节省空间 */
+  .unit-card .u-kind { padding-left: 0; }
+  .u-kind { font-size: 9px; }
+  .u-name { font-size: 10px; }
+  .u-stats { font-size: 10px; }
+
+  /* 中央区：纵向堆叠（卡组/弃牌/进程 一行，日志在上方） */
+  #center { display: flex; flex-direction: column; gap: 8px; }
+  .piles { flex-direction: row; min-width: 0; width: 100%; }
+  .pile { min-width: 0; flex: 1; }
+  .zone-area { min-width: 0; flex: 1.4; }
+  .zone-label { font-size: 10px; }
+  #logPanel { min-width: 0; flex-direction: column; }
+  .log-half { min-width: 0; max-height: 150px; }
+  .log-half-right { border-left: none; border-top: 1px solid rgba(201,162,39,.2); }
+
+  /* 手牌：更紧凑横滚 */
+  .hand { gap: 5px; padding: 5px 2px; min-height: 78px; }
+  .hand-card { flex: 0 0 62px; padding: 3px; }
+  .hand-card .n { font-size: 11px; }
+  .hand-card .s { font-size: 9px; }
+
+  /* 模态：占满宽度 */
+  .modal-box { max-width: 96%; width: 96%; max-height: 85vh; }
+  #modal .modal-opt { font-size: 14px; padding: 12px 12px; }
+
+  /* 全屏覆盖层（加载/图鉴/抽选） */
+  .loading-frame { width: 92%; }
+  .loading-verse { font-size: 16px; }
+  .codex-frame { width: 96%; height: 92vh; }
+  .codex-head { flex-wrap: wrap; gap: 6px; }
+  .codex-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+  .codex-card { font-size: 10px; }
+
+  /* 抽选屏 */
+  .draft-frame { width: 96%; padding: 14px 10px 12px; }
+  .draft-stage { flex-direction: column; gap: 10px; }
+  .draft-side-panel { min-width: 0; width: 100%; padding: 10px 10px; }
+  .draft-cards { gap: 10px; }
+  .draft-slot { width: 118px; height: 158px; }
+  .draft-mid { min-width: 0; flex-direction: row; gap: 8px; }
+  .draft-vs { font-size: 30px; }
+  .draft-mid-line { width: 30px; height: 2px; }
+  .draft-slot .draft-card-front, .draft-slot .draft-card-back { width: 100%; height: 100%; }
+  .draft-skip { font-size: 13px; }
+  .draft-crest { font-size: 26px; }
+  .draft-title { font-size: 20px; letter-spacing: 3px; }
+  .draft-sub { font-size: 11px; letter-spacing: 2px; }
+  .draft-ghost { font-size: 12px; }
+
+  /* 常置牌背景：缩小防遮挡 */
+  .zone-bg { width: 260px; height: 200px; }
+
+  /* 单位详情/数值明细：单列 */
+  .sb-wrap { flex-direction: column; gap: 8px; }
+  .shogun-detail { min-width: 0; }
+
+  /* 攻击引导线加粗（触屏可见性） */
+  .aim-line line { stroke-width: 3.5; }
+
+  /* 事件动画层适配 */
+  .event-overlay { top: 55%; }
+
+  /* 顶部按钮不挤压标题 */
+  #topbar { gap: 6px; }
+}
