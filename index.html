@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>幕府争锋 · SHŌGUN CLASH</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<!-- ═══ 常置牌专属背景（城池左下 / 事件右下，各占 1/4 屏，淡显）═══ -->
+<div id="bgCity" class="zone-bg bg-city"></div>
+<div id="bgEvent" class="zone-bg bg-event"></div>
+
+<!-- ═══ 化身抽选屏 ═══ -->
+<div id="draftScreen" class="screen">
+  <div class="draft-petals">
+    <i class="petal" style="left:8%;animation-delay:0s;animation-duration:13s"></i>
+    <i class="petal" style="left:22%;animation-delay:3s;animation-duration:11s"></i>
+    <i class="petal" style="left:37%;animation-delay:6s;animation-duration:15s"></i>
+    <i class="petal" style="left:55%;animation-delay:1.5s;animation-duration:12s"></i>
+    <i class="petal" style="left:70%;animation-delay:4.5s;animation-duration:14s"></i>
+    <i class="petal" style="left:84%;animation-delay:2.5s;animation-duration:10s"></i>
+    <i class="petal" style="left:93%;animation-delay:7s;animation-duration:13s"></i>
+    <i class="petal" style="left:14%;animation-delay:9s;animation-duration:16s"></i>
+    <i class="petal" style="left:64%;animation-delay:8s;animation-duration:11s"></i>
+    <i class="petal" style="left:45%;animation-delay:10s;animation-duration:14s"></i>
+  </div>
+  <div class="draft-frame">
+    <div class="draft-crest">◉</div>
+    <div class="draft-title">幕府争锋 <em>SHŌGUN CLASH</em></div>
+    <div class="draft-sub">— 化身抽選 · AVATAR DRAFT —</div>
+    <div id="draftOrder" class="draft-order">先手：——</div>
+    <div class="draft-tip">第 1、2 回合双方不能攻击
+      <button id="codexBtn" class="codex-open-btn">📖 查看全部卡牌</button>
+    </div>
+    <div id="draftStage" class="draft-stage"></div>
+    <div class="draft-ghost">人間五十年 · 下天のうちを比ぶれば夢幻</div>
+  </div>
+</div>
+
+<!-- ═══ 加载屏（敦盛）═══ -->
+<div id="loadingScreen" class="screen hidden">
+  <div class="loading-frame">
+    <div class="loading-kamon">◉</div>
+    <div id="loadingVerse" class="loading-verse"></div>
+    <div id="loadingVerseCn" class="loading-verse-cn hidden"></div>
+    <div class="loading-bar"><div id="loadingFill" class="loading-fill"></div></div>
+    <div class="loading-src">—— 幸若舞『敦盛』——</div>
+  </div>
+</div>
+
+<!-- ═══ 全卡牌图鉴（开局可浏览全部 190 张）═══ -->
+<div id="codexScreen" class="screen codex-screen hidden">
+  <div class="codex-frame">
+    <div class="codex-head">
+      <div class="codex-title">📖 卡牌图鉴 · CODEX</div>
+      <div class="codex-count" id="codexCount"></div>
+      <button id="codexClose" class="codex-close">✕ 关闭</button>
+    </div>
+    <div id="codexTabs" class="codex-tabs"></div>
+    <div id="codexGrid" class="codex-grid"></div>
+  </div>
+</div>
+
+<div id="appScale">
+<div id="app">
+  <!-- 顶部栏 -->
+  <header id="topbar">
+    <div class="title">⚔ 幕府争锋 SHŌGUN CLASH</div>
+    <div id="phaseInfo" class="phase-info"></div>
+    <div id="topButtons"></div>
+  </header>
+
+  <!-- 敌方（AI）区域 -->
+  <section id="opponent" class="player-area opponent-area"></section>
+
+  <!-- 中央区：卡组/弃牌/日志 -->
+  <section id="center">
+    <div class="piles">
+      <div class="pile" id="deckPile"><div class="pile-label">共用卡组</div><div class="pile-count" id="deckCount">0</div><button id="btnDraw" class="hidden">抽牌</button></div>
+      <div class="pile" id="discardPile"><div class="pile-label">弃牌堆</div><div class="pile-count" id="discardCount">0</div></div>
+      <div id="zoneArea" class="zone-area"><div class="zone-label">进程 / 城池区</div><div id="zoneSlot"></div></div>
+    </div>
+    <div id="logPanel">
+      <div class="log-half">
+        <div class="log-title">📜 战报</div>
+        <div id="logList"></div>
+      </div>
+      <div class="log-half log-half-right">
+        <div class="log-title">📋 流程提示</div>
+        <div id="flowList"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 己方（玩家）区域 -->
+  <section id="player" class="player-area player-area-self"></section>
+
+</div><!-- /#app -->
+</div><!-- /#appScale -->
+
+<!-- 模态层（置于缩放层外，保持视口定位） -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <div id="modalTitle" class="modal-title"></div>
+    <div id="modalBody"></div>
+    <div id="modalButtons"></div>
+  </div>
+</div>
+<script src="js/data.js"></script>
+<script src="js/game.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
