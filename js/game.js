@@ -22,7 +22,14 @@ const Game = {
   SAVE_KEY: "shogunClash.save",
   save() {
     if (typeof localStorage === "undefined") return;
-    try { localStorage.setItem(this.SAVE_KEY, JSON.stringify(this.state)); } catch (e) {}
+    try {
+      // transient 条目（如「已从存档恢复现场」）只在本次会话显示，不写入存档，
+      // 否则每次刷新都会往战报里再叠一条同类记录
+      const payload = this.state.log.some((l) => l.transient)
+        ? { ...this.state, log: this.state.log.filter((l) => !l.transient) }
+        : this.state;
+      localStorage.setItem(this.SAVE_KEY, JSON.stringify(payload));
+    } catch (e) {}
   },
   clearSave() {
     if (typeof localStorage === "undefined") return;
@@ -80,7 +87,7 @@ const Game = {
     const st = this.state;
     if (!st) return;
     st.waitingAI = false;
-    this.log(`↻ 已从存档恢复现场（第 ${st.turnNo} 回合 · ${st.players[st.cur].name} 的回合）`, "sys");
+    this.log(`↻ 已从存档恢复现场（第 ${st.turnNo} 回合 · ${st.players[st.cur].name} 的回合）`, "sys", null, true);
     UI.renderAll();
   },
 
@@ -120,9 +127,10 @@ const Game = {
     this.log(`🔥 事件【${zz.card.name}】战火磨砺·受创：${st.players[pi].name} 将军受伤，【${cand.card.name}】防御 +1`);
   },
 
-  log(msg, who = "sys", card = null) {
+  /* transient=true 的记录仅在本次会话显示，不随存档持久化 */
+  log(msg, who = "sys", card = null, transient = false) {
     this._lastAct = Date.now();
-    this.state.log.push({ msg, who, card });
+    this.state.log.push({ msg, who, card, transient });
     UI.renderLog();
   },
 
@@ -164,6 +172,7 @@ const Game = {
       hp: mhp, maxHp: mhp, hand: [], field: [], treasure: [], hpHist: [], typeAtk: {},
       emperorHist: [{ t: 0, src: "即位", desc: "开局化身抽选" }],
       turnsTaken: 0, graceCnt: 0, zoneUsed: 0, attackUsed: 0, drawnThisTurn: false,
+      summonedThisTurn: 0, summonedDaimyoOrNoble: false,
       noAtkUntil: 0, recruitUsed: false, healCooldown: 0, purgeUsed: false, bypassUsed: false, assassinUsed: false,
       talentCooldown: 3, natureUsed: false, rankUsed: false, rankBlockAttack: false, tempoUsed: false,
       noUnitStreak: 0, // 连续无人物牌（场上+手牌）的己方回合数
@@ -179,8 +188,9 @@ const Game = {
       players, deck, discard: [], zone: null, log: [],
       turnNo: 1, cur: first, winner: null, waitingAI: false, l4Used: {},
     };
+    const deckTotal = deck.length;
     for (const p of players) { for (let i = 0; i < 5; i++) p.hand.push(deck.pop()); }
-    this.log("⚔ 开局：共用卡组 " + deck.length + " 张");
+    this.log("⚔ 开局：共用卡组 " + deckTotal + " 张");
     this.log(`玩家：天皇【${players[0].emperor.name}】 将军【${players[0].shogun.name}】`, "me");
     this.log(`电脑：天皇【${players[1].emperor.name}】 将军【${players[1].shogun.name}】`, "ai");
     this.log("先手：" + (first === 0 ? "玩家" : "电脑") + "（第1、2回合不能攻击）");
@@ -385,13 +395,13 @@ const Game = {
     if (p.shogun.aura_type === "攻击") { atk += p.shogun.aura_val; AP.push({ k: "将军光环·攻击", v: p.shogun.aura_val }); }
     else { def += p.shogun.aura_val; DP.push({ k: "将军光环·防御", v: p.shogun.aura_val }); }
     // 天皇轨道
-    let bladeBoost = 0, armorBoost = 0, nobleBoost = 0, samuraiAtk = 0, mountBoost = 0;
+    let bladeBoost = 0, armorBoost = 0, nobleBoost = 0, samuraiAtk = 0;
     for (const tr of [p.emperor.t1, p.emperor.t2, p.emperor.t3]) {
       if (tr.includes("武士之锋")) samuraiAtk += parseInt(tr.match(/(\d+)/)[1]);
       if (tr.includes("公卿之智")) nobleBoost += parseInt(tr.match(/(\d+)/)[1]);
       if (tr.includes("兵刃之锐")) bladeBoost += parseInt(tr.match(/(\d+)/)[1]);
       if (tr.includes("装具之固")) armorBoost += parseInt(tr.match(/(\d+)/)[1]);
-      if (tr.includes("骑具之灵")) mountBoost += parseInt(tr.match(/(\d+)/)[1]);
+      // 御·骑具之灵只影响躲避率，在 unitDodge 中结算，此处不叠加攻防
     }
     // 城池（城威持续；增幅一/二为放置时一次性，不在此叠加）
     const z = st.zone;
@@ -431,7 +441,7 @@ const Game = {
         else if (f.startsWith("②")) { def += bv; DP.push({ k: `公卿【${u2.card.name}】全场防御`, v: bv }); }
         else if (f.startsWith("③")) bladeBoost += bv;
         else if (f.startsWith("④")) armorBoost += bv;
-        else if (f.startsWith("⑤")) mountBoost += bv;
+        // ⑤ 骑具只影响躲避率，在 unitDodge / aura 中结算，此处不叠加攻防
       }
     }
     // 大名 l2 励武/护卿
@@ -541,75 +551,6 @@ const Game = {
   unitStats(u) {
     const P = this.unitStatParts(u);
     return { atk: P.atk, def: P.def, rawAtk: P.rawAtk, rawDef: P.rawDef };
-  },
-
-  unitStatsOld(u) {
-    const p = this.state.players[u.pi];
-    let atk = u.baseAtk, def = u.baseDef;
-    const a = this.aura(p);
-    atk += a.atk; def += a.def;
-    // 装备（光环类增幅由 a.blade/a.armor 统一提供，避免重复计算）
-    let bladeBonus = 0, armorBonus = 0;
-    if (u.eq.blade) {
-      let b = u.eq.blade.atk;
-      if (u.kind === "samurai" && u.fx && u.fx.includes("持刃")) b += 1;
-      bladeBonus += b;
-    }
-    if (u.eq.armor) armorBonus += u.eq.armor.dfs;
-    // 城池装备共鸣强化（第二层）
-    const cc = this.state.zone;
-    if (cc && cc.type === "castle") {
-      const own = cc.owner === u.pi;
-      const tier = cc.card.tier;
-      const team = this.state.players[u.pi].field;
-      if (own && (tier === "王城" || tier === "名城")) {
-        // 己方兵刃可同时作用两位（无兵刃的合法单位共享一件兵刃加成）
-        if (!u.eq.blade && (u.kind === "daimyo" || u.kind === "samurai")) {
-          const sharer = team.find(x => x.eq.blade && x.uid !== u.uid);
-          if (sharer) bladeBonus += sharer.eq.blade.atk;
-        }
-      }
-      if (!own && (tier === "王城" || tier === "名城")) {
-        // 敌方装具可同时作用两位（敌方单位共享装具加成）
-        if (!u.eq.armor && (u.kind === "daimyo" || u.kind === "noble")) {
-          const sharer = team.find(x => x.eq.armor && x.uid !== u.uid);
-          if (sharer) armorBonus += sharer.eq.armor.dfs;
-        }
-      }
-      if (own && tier === "大城" && u.eq.blade) bladeBonus += Math.ceil(u.eq.blade.atk * 0.5);   // 己方兵刃 +50%
-      if (!own && tier === "大城" && u.eq.blade) bladeBonus -= Math.floor(u.eq.blade.atk * 0.3); // 敌方兵刃 −30%
-    }
-    atk += bladeBonus + ((u.eq.blade && a.blade) || 0); // 装备光环（兵刃之锐/公卿③）仅在有兵刃时生效
-    def += armorBonus + ((u.eq.armor && a.armor) || 0); // 装备光环（装具之固/公卿④）仅在有装具时生效
-    if (u.kind === "samurai") atk += (a.samuraiAtk || 0); // 天皇·武士之锋（仅武士）
-    if (u.kind === "samurai" && u.eq.mount && u.fx && u.fx.includes("骑术")) def += 1;
-    // 宝物（装备对象天皇的持有者视角）：第一~三层指定加成
-    for (const tr of p.treasure) {
-      if (tr.tgt.samurai === u.uid && u.kind === "samurai") def += tr.card.s1;
-      if (tr.tgt.noble === u.uid && u.kind === "noble") atk += tr.card.n1;
-      if (tr.tgt.daimyo === u.uid && u.kind === "daimyo") { atk += tr.card.d1; def += tr.card.d1; }
-    }
-    // 第三层 · 事件立场：己方/敌方事件 → 攻/防 +1（fx 形如 "己攻/敌防"）
-    const zz = this.state.zone;
-    if (u.kind === "samurai" && zz && zz.type === "process" && u.fx) {
-      const parts = u.fx.split("·");
-      if (parts.length >= 3) {
-        const l3 = parts[2];
-        const own = zz.owner === u.pi;
-        const [mine, theirs] = l3.split("/");
-        if (own && mine.startsWith("己攻")) atk += 1;
-        if (own && mine.startsWith("己防")) def += 1;
-        if (!own && theirs.startsWith("敌攻")) atk += 1;
-        if (!own && theirs.startsWith("敌防")) def += 1;
-      }
-    }
-    // 三层特效累积
-    atk += u.extraAtk || 0;
-    def += u.extraDef || 0;
-    // 光环对攻击/防御的贡献（供受创时反推原始值）
-    const rawAtk = u.baseAtk + (u.extraAtk || 0);
-    const rawDef = u.baseDef + (u.extraDef || 0);
-    return { atk, def, rawAtk, rawDef };
   },
 
   unitDodge(u) {
@@ -758,7 +699,6 @@ const Game = {
     // 事件·暗杀：改为己方行动阶段手动发动（右上角按钮），不再自动触发
     // 圣迹·丰玉姬化龙待命：对方回合使用时下一己方回合生效
     if (p._ryujinPending) {
-      const pu = p.field.find(x => x.uid === p._ryujinPending);
       this.ryujinStrike(st.cur);
       p._ryujinPending = null;
     }
@@ -849,6 +789,7 @@ const Game = {
     // 战场区满员亦可献祭召唤：先移除祭品腾位，再放置新单位
     p.hand.splice(hi, 1);
     p.field.splice(fi, 1);
+    sac.alive = false;
     this.state.discard.push({ type: sac.kind, card: sac.card });
     this.castleL4OnUnitGone(sac);
     // 祭品装备随弃（骑具下场触发八百里分麾下炙）
@@ -1737,7 +1678,6 @@ const Game = {
     const st = this.state;
     const p = st.players[pi];
     const opp = st.players[1 - pi];
-    let bypassUsed = false;
     if (!this.canAttack(p)) { this.log("本回合不能攻击！"); return false; }
     const u = p.field.find(x => x.uid === attackerUid);
     if (!u) { this.log("单位不存在"); return false; }
@@ -1787,7 +1727,6 @@ const Game = {
       this.hpEvent(pi, bi.cost, "破阵", p.hp, false);
       this.zHist(st.zone, "破阵", `${p.name} 发动越级攻击`);
       p.bypassUsed = true;
-      bypassUsed = true;
       if (UI.floatDamage) UI.floatDamage("shogun:" + pi, bi.cost);
       this.log(`⚡ 破阵发动：${p.name} 将军 −${bi.cost} 生命，本回合可越级攻击`, p.isAI ? "ai" : "me");
     }
@@ -2225,7 +2164,6 @@ const Game = {
   useForge(pi, uid) {
     const st = this.state;
     const p = st.players[pi];
-    const opp = st.players[1 - pi];
     const info = this.forgeInfo(pi);
     if (!info || !info.ok) { this.log("熔炉当前不可用"); return false; }
     const holder = info.armors.find(u => u.uid === uid) || info.armors[0];
@@ -2466,6 +2404,8 @@ const Game = {
 
   removeUnit(u) {
     const p = this.state.players[u.pi];
+    u.alive = false;
+    u.defeated = true;
     const i = p.field.indexOf(u);
     if (i >= 0) {
       const card = { type: u.kind === "samurai" ? "samurai" : u.kind === "daimyo" ? "daimyo" : "noble", card: u.card };

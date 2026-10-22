@@ -1,0 +1,15 @@
+{
+  "name": "shogun-clash",
+  "version": "1.0.0",
+  "private": true,
+  "description": "幕府争锋（Shōgun Clash）网页版可玩演示 —— 零依赖纯静态单页应用",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "eslint": "^9.37.0",
+    "vitest": "^3.2.4"
+  }
+}
