@@ -302,6 +302,8 @@ const UI = {
     const rb = mk("🔄 新开局", () => UI.confirmRestart());
     rb.style.marginRight = "auto";
     btns.appendChild(rb);
+    // 卡牌图鉴：对局中也可查阅全部卡牌（此前仅开局抽选屏有入口）
+    btns.appendChild(mk("📖 图鉴", () => UI.showCodex()));
     if (st.winner != null) return;
     const isMyTurn = st.cur === 0 && !p.isAI;
     const isAITurn = st.cur === 1 && p.isAI;
@@ -370,7 +372,6 @@ const UI = {
       if (impInfo.length) {
         const usable = impInfo.filter(x => x.ok);
         if (usable.length) {
-          const labels = usable.map(x => x.label).join(" ｜ ");
           btns.appendChild(mk(`👑 帝王之征（${usable.length} 项可用）`, () => {
             const body = document.createElement("div");
             body.innerHTML = `<div style="margin-bottom:8px;line-height:1.7">选择一项帝王之征发动（每局各一次）：</div>`;
@@ -527,7 +528,7 @@ const UI = {
     html += `<div class="avatar-card${shogunAim ? " atk-targetable" : ""}" data-shogun="1" data-pi="${pi}">
       <div class="role">本阵 · 将军${shogunAim ? "（可点击直击）" : ""}</div>
       <div class="nm">${p.shogun.name}</div>
-      <div class="info">${p.shogun.skill} ${p.shogun.skillv}<br>躲避 ${p.shogun.dodge}%<br>${p.shogun.talent || ""} ／ ${p.shogun.nature || ""} ／ ${p.shogun.rank || ""}${noAtk ? "<br><b style='color:#ff6b5a'>两回合禁攻</b>" : ""}</div>
+      <div class="info">${p.shogun.skill} ${p.shogun.skillv}<span class="dg-line">躲避 ${p.shogun.dodge}%</span><span class="tg-line">${p.shogun.talent || ""} ／ ${p.shogun.nature || ""} ／ ${p.shogun.rank || ""}</span>${noAtk ? '<span class="nk-line" style="color:#ff6b5a">两回合禁攻</span>' : ""}</div>
       <div class="hp-bar"><div class="fill" style="width:${Math.max(0, Math.min(100, p.hp / (p.maxHp || 100) * 100))}%;background:${hpColor}"></div></div>
       <div class="hp-text">HP ${p.hp} / ${p.maxHp || 100}</div>
     </div>`;
@@ -582,7 +583,8 @@ const UI = {
     const canAct = (isSelf && selfTurn) || (!isSelf && aiTurn);
     for (let i = 0; i < p.hand.length; i++) {
       const c = p.hand[i];
-      const tn = c.type === "samurai" ? c.card.name : `【${TYPE_CN[c.type]}】${c.card.name}`;
+      // 人物牌（武士/公卿/大名）直接显示卡名；TYPE_CN 只含非人物牌，混用会取到 undefined
+      const tn = KIND_CN[c.type] ? c.card.name : `【${TYPE_CN[c.type]}】${c.card.name}`;
       let sub = "";
       if (c.type === "samurai") sub = `攻${c.card.atk}/防${c.card.dfs}`;
       else if (c.type === "daimyo") sub = `攻${c.card.atk}/防${c.card.dfs}`;
@@ -892,11 +894,7 @@ const UI = {
     });
 
     // 对方空场时可点将军（直击）
-    if (this.combatMode && this.selectedAttacker != null) {
-      const oppField = st.players[1].field.length;
-      const oppArea = this.el("opponent");
-      // 已在 unit-card 处理；将军直击通过顶部按钮
-    }
+    // 已在 unit-card 处理；将军直击通过顶部按钮
   },
 
   startSacrifice(hi) {
