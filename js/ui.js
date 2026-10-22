@@ -541,7 +541,7 @@ const UI = {
         const s = Game.unitStats(u);
         const cls = ["samurai", "noble", "daimyo"][["samurai", "noble", "daimyo"].indexOf(u.kind)];
         let statTxt = `攻${s.atk}/防${s.def}`;
-        if (u.kind === "daimyo") statTxt = `攻${s.atk}/防${s.def} · 命${u.hp}`;
+        if (u.kind === "daimyo") statTxt = `攻${s.atk}/防${s.def} · 命${u.hp}/${Game.daimyoHpCap(u)}`;
         const uDodge = Game.unitDodge(u);
         if (uDodge > 0) statTxt += ` <span class="dodge-tag">躲${uDodge}%</span>`;
         const prevKey = this._prevStats && this._prevStats[u.uid];
@@ -552,6 +552,12 @@ const UI = {
         const eq = [u.eq.blade ? `<span class="eq-chip" data-eq-type="blade" data-eq-name="${u.eq.blade.name}">刃</span>` : "",
                u.eq.armor ? `<span class="eq-chip" data-eq-type="armor" data-eq-name="${u.eq.armor.name}">铠</span>` : "",
                u.eq.mount ? `<span class="eq-chip" data-eq-type="mount" data-eq-name="${u.eq.mount.name}">骑</span>` : ""].filter(Boolean).join("");
+        // 大名第二层·辅佐：显示当前指定目标（点击可重新指定）
+        const l2Info = u.kind === "daimyo" && u.pi === 0 ? Game.l2Info(u) : null;
+        const l2Target = l2Info ? Game.l2TargetOf(u) : null;
+        const l2Chip = l2Info
+          ? `<span class="eq-chip" data-l2-uid="${u.uid}" title="点击重新指定辅佐目标">辅：${l2Target ? l2Target.card.name : "未指定"}</span>`
+          : "";
         let extra = "";
         if (this.combatMode && u.pi === 0 && !p.typeAtk[u.kind]) extra = " selectable atk-selectable";
         if (this.mode === "sacrifice" && (u.kind === "samurai" || u.kind === "noble") && u.summonedTurn < st.turnNo) extra = " targetable";
@@ -561,14 +567,19 @@ const UI = {
           extra = isTarget ? " targetable atk-targetable" : " targetable atk-other";
         }
         if (u.pi === 0 && this.mode === "equip") extra = " targetable";
-        const lifeBar = u.kind === "daimyo" ? `<div class="hp-bar mini"><div class="fill" style="width:${Math.max(0, u.hp / 20 * 100)}%;background:#d9534f"></div></div>` : "";
+        if (u.pi === 0 && this.mode === "designate") {
+          const dm = st.players[0].field.find(x => x.uid === this.l2DaimyoUid);
+          const info = dm ? Game.l2Info(dm) : null;
+          if (info && u.kind === info.kind && u.uid !== this.l2DaimyoUid) extra = " targetable";
+        }
+        const lifeBar = u.kind === "daimyo" ? `<div class="hp-bar mini"><div class="fill" style="width:${Math.max(0, u.hp / Game.daimyoHpCap(u) * 100)}%;background:#d9534f"></div></div>` : "";
         html += `<div class="bf-slot fill"><div class="unit-card ${cls}${extra}" data-uid="${u.uid}" data-pi="${u.pi}">
           <div class="u-portrait">${this.portraitHTML({ type: u.kind === "samurai" ? "samurai" : u.kind === "daimyo" ? "daimyo" : "noble", card: u.card }, 34)}</div>
           <div class="u-kind">${KIND_CN[u.kind]}<span style="float:right;cursor:pointer" data-info-uid="${u.uid}" title="查看详情">ℹ</span>${u.pi === 0 ? `<span style="float:right;cursor:pointer;color:#ff9a8a" data-discard-uid="${u.uid}" title="自愿下场">✕</span>` : ""}</div>
           <div class="u-name">${u.card.name}</div>
           <div class="u-stats${statChanged ? " stat-changed" : ""}">${statTxt}</div>
           ${lifeBar}
-          <div class="u-eq">${eq}</div>
+          <div class="u-eq">${eq}${l2Chip}</div>
         </div></div>`;
       } else {
         html += `<div class="bf-slot"></div>`;
@@ -724,6 +735,14 @@ const UI = {
       });
     });
 
+    // 大名辅佐目标：点击徽标进入指定模式
+    cont.querySelectorAll("[data-l2-uid]").forEach(el => {
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        this.startDesignate(parseInt(el.dataset.l2Uid));
+      });
+    });
+
     // 天皇详情查看
     cont.querySelectorAll("[data-emperor]").forEach(el => {
       el.addEventListener("click", () => {
@@ -784,7 +803,7 @@ const UI = {
       el.addEventListener("click", () => {
         const uid = parseInt(el.dataset.uid);
         const upi = parseInt(el.dataset.pi);
-        if (this.combatMode && this.mode !== "equip" && this.mode !== "sacrifice" && upi === 0) {
+        if (this.combatMode && this.mode !== "equip" && this.mode !== "sacrifice" && this.mode !== "designate" && upi === 0) {
           // 选攻击者（金色虚线引导随鼠标指向目标）；本类型本回合已攻击的单位不可再选
           const p0 = st.players[0];
           const u0 = p0.field.find(x => x.uid === uid);
@@ -857,6 +876,22 @@ const UI = {
           }
           return;
         }
+        if (this.mode === "designate" && upi === 0) {
+          const dm = st.players[0].field.find(x => x.uid === this.l2DaimyoUid);
+          const info = dm ? Game.l2Info(dm) : null;
+          if (!dm || !info) { this.mode = "idle"; this.l2DaimyoUid = null; this.renderAll(); return; }
+          const tgt = st.players[0].field.find(x => x.uid === uid);
+          if (!tgt || tgt.kind !== info.kind) {
+            this.logHint(`【${dm.card.name}】的辅佐目标必须是${info.kind === "samurai" ? "武士" : "公卿"}`);
+            return;
+          }
+          if (Game.designateL2Target(0, this.l2DaimyoUid, uid)) {
+            this.flashUnit(0, uid);
+            this.mode = "idle"; this.l2DaimyoUid = null;
+            this.renderAll();
+          }
+          return;
+        }
       });
     });
 
@@ -912,6 +947,24 @@ const UI = {
     this.mode = "equip";
     this.eqHandIdx = hi;
     this.logHint("点击场上一位合法单位进行装备");
+    this.renderAll();
+  },
+
+  /* 大名第二层·辅佐：指定唯一目标（可重新指定） */
+  startDesignate(uid) {
+    const p = Game.state.players[0];
+    const d = p.field.find(x => x.uid === uid);
+    if (!d) return;
+    const info = Game.l2Info(d);
+    if (!info) { this.logHint("该大名没有辅佐效果"); return; }
+    const kindCn = info.kind === "samurai" ? "武士" : "公卿";
+    if (!p.field.some(x => x.kind === info.kind)) {
+      this.logHint(`己方场上没有${kindCn}，无法指定辅佐目标`);
+      return;
+    }
+    this.mode = "designate";
+    this.l2DaimyoUid = uid;
+    this.logHint(`【${d.card.name}】${info.type}：点击一位己方${kindCn}作为辅佐目标`);
     this.renderAll();
   },
 
@@ -1108,13 +1161,13 @@ const UI = {
       html += this.fxLine("数值", `攻击 <b>${cd.atk}</b> ／ 防御 <b>${cd.dfs}</b>（合计 ≤15）`);
       html += this.fxLine("两条命（命值制）", "替死 10 点 + 本命 10 点 = 共 20 点；每次命中耗攻击值点命值；进入本命时攻防按所有特效加减重新计算");
       html += this.fxLine("第一层·动态", "己方武士数量多于对方 → 攻击 +1；己方公卿多于对方 → 防御 +1（实时）");
-      html += this.fxLine("第二层·辅佐", cd.l2);
-      html += this.fxLine("第三层·城盟", "己方王城 → 额外一次替死（命值+10）；己方名城/大城 → 攻防各 +1");
-      html += this.fxLine("第四层·事件之势", cd.l4);
+      html += this.fxLine("第二层·辅佐", cd.l2 + "（常置光环，仅指定一位目标；目标下场后自动改指，可随时重新指定）");
+      html += this.fxLine("第三层·城盟", "己方王城在区 → 额外一次替死（命值上限 20→30，王城离区即回落）；己方名城/大城 → 攻防各 +1");
+      html += this.fxLine("第四层·事件之势", cd.l4 + "（事件在区时生效；天命在事件入场时一次性结算）");
       html += this.layerBlock([
         ["第一层·动态", "⚙ 实时（己方武士/公卿多于对方）", "passive"],
-        ["第二层·辅佐", `✔ 常驻光环（${cd.l2}）`, "ok"],
-        ["第三层·城盟", "○ 己方城池时生效（王城命值+10／名城/大城攻防+1）", "cond"],
+        ["第二层·辅佐", `✔ 常驻光环（${cd.l2}，指定唯一目标）`, "ok"],
+        ["第三层·城盟", "○ 己方城池时生效（王城命值上限+10／名城/大城攻防+1）", "cond"],
         ["第四层·事件之势", `○ 事件区为事件牌时生效（${cd.l4}）`, "cond"],
       ]);
     } else if (t === "noble") {
@@ -1130,7 +1183,7 @@ const UI = {
       html += `<div class="fx-row"><b style="color:#ffd98a">第一层·攻防洪流</b>：</div>
         <div style="margin:3px 0;padding-left:8px;border-left:2px solid rgba(201,162,39,.4)">● 己方战场区所有单位<b>攻击值与防御值各 +${cd.a1o}</b>；对方战场区所有单位<b>各 +${cd.a1p}</b>。</div>
         <div style="margin:3px 0;padding-left:8px;border-left:2px solid rgba(201,162,39,.4)">● 装备共鸣：常置期间己方所有兵刃、装具的<b>成长概率 +10%</b>，对方所有兵刃/装具的<b>成长概率 +5%</b>（成长概率上限 100%）；事件被顶替后恢复原值。</div>`;
-      html += this.fxLine("第二层·天佑将军", `每张事件牌每局仅触发一次：放置后首个回合开始——事件为己方时己方将军 +${cd.a2o}；为对方时对方将军 +${cd.a2p}（上限为将军总生命）`);
+      html += this.fxLine("第二层·天佑将军", `每回合开始各结算一次：事件为己方时己方将军 +${cd.a2o}；为对方时对方将军 +${cd.a2p}（上限为将军总生命）`);
       html += `<div class="fx-row"><b style="color:#ffd98a">第三层·战火磨砺</b>（四个触发效果<b>全部生效</b>，增幅为永久累积）：</div>
         <div style="margin:3px 0;padding-left:8px;border-left:2px solid rgba(201,162,39,.4)"><b style="color:#9ad0ff">● 敌攻</b>：每当<b>对方公卿发动一次攻击</b>后，己方从己方战场区选一张单位，攻击值 <b>+1</b>。</div>
         <div style="margin:3px 0;padding-left:8px;border-left:2px solid rgba(201,162,39,.4)"><b style="color:#9ad0ff">● 受创</b>：每当<b>己方将军受到一次伤害</b>后，己方从己方战场区选一张单位，防御值 <b>+1</b>。</div>
@@ -1154,8 +1207,8 @@ const UI = {
       ]);
     } else if (t === "castle") {
       html += this.fxLine("等级", cd.tier);
-      html += this.fxLine("第一层·城威", `己方战场区攻防各 +${cd.ao}／敌方各 +${cd.ap}；上场时敌方将军 −5；增幅一：${cd.amp1}；增幅二：${cd.amp2}`);
-      html += this.fxLine("第二层·装备共鸣强化", cd.tier === "王城" ? "己方兵刃、敌方装具可同时作用两位（骑具躲避仅对装备骑具的单位生效）" : cd.tier === "名城" ? "己方兵刃、敌方装具可同时作用两位" : "己方兵刃数值 +50%、敌方兵刃数值 −30%");
+      html += this.fxLine("第一层·城威", `己方战场区攻防各 +${cd.ao}／敌方各 +${cd.ap}；上场时敌方将军 −5；增幅一：${cd.amp1}；增幅二：${cd.amp2}（均为常置光环）`);
+      html += this.fxLine("第二层·装备共鸣强化", cd.tier === "王城" ? "己方兵刃、敌方装具可同时作用两位；<b>己方骑具亦可同时作用于两名己方单位</b>，且每当该骑具躲避判定成功时，敌方一位武士攻击值 <b>+1</b>（永久）" : cd.tier === "名城" ? "己方兵刃、敌方装具可同时作用两位（骑具不共享）" : "己方兵刃数值 +50%、敌方兵刃数值 −30%");
       html += this.fxLine("第三层·概率倾斜", cd.tier === "王城" ? "己方概率类效果 <b>+10%</b>、敌方 <b>+5%</b>（装备之外的概率，如将军躲避率）" : cd.tier === "名城" ? "己方 <b>+5%</b>、敌方 <b>−5%</b>（装备之外的概率）" : "己方 <b>+5%</b>、敌方 <b>−5%</b>（<b>只作用于骑具、装具</b>）");
       // 兴衰损益：l4 四值 = 己方大名下场→敌方−a／己方公卿下场→敌方−b／敌方大名上场→己方+c／敌方公卿上场→己方+d
       const l4n = (cd.l4 || "").split("／").map(s => { const m = s.match(/(\d+)/); return m ? parseInt(m[1]) : 0; });
@@ -1171,8 +1224,8 @@ const UI = {
       const inZoneC = zzC && zzC.type === "castle" && zzC.card.id === cd.id;
       html += this.layerBlock([
         ["第一层·城威", inZoneC ? "✔ 生效中（己攻防+" + cd.ao + "／敌+" + cd.ap + "）" : "○ 未放置", inZoneC ? "ok" : "cond"],
-        ["增幅一/二", inZoneC ? "✔ 生效中（" + cd.amp1 + "／" + cd.amp2 + "）" : "○ 未放置", inZoneC ? "ok" : "cond"],
-        ["第二层·装备共鸣", inZoneC ? "✔ 生效中" : "○ 未放置", inZoneC ? "ok" : "cond"],
+        ["增幅一/二", inZoneC ? "✔ 生效中（常置光环：" + cd.amp1 + "／" + cd.amp2 + "）" : "○ 未放置", inZoneC ? "ok" : "cond"],
+        ["第二层·装备共鸣", inZoneC ? (cd.tier === "王城" ? "✔ 生效中（含骑具共享与躲避奖励）" : "✔ 生效中") : "○ 未放置", inZoneC ? "ok" : "cond"],
         ["第三层·概率倾斜", inZoneC ? "✔ 生效中（概率类±%）" : "○ 未放置", inZoneC ? "ok" : "cond"],
         ["第四层·兴衰损益", "⚙ 触发类（上场/下场/单位离场结算）", "passive"],
         ["第五层·募兵", cd.l5 === "无" ? "— 无" : "🖱 主动（每 3 回合一次，顶部按钮）", "act"],
@@ -1236,7 +1289,7 @@ const UI = {
       html += this.layerBlock([
         ["第一层·消解", "🖱 对方攻击时可响应（代价：两回合禁攻）", "act"],
         ["第二层·灾殃", "🖱 主动使用（X 类型攻击总和伤害＋反噬）", "act"],
-        ["第三层·王座更迭", "○ 双方三类型俱全时触发（换将军）", "cond"],
+        ["第三层·王座更迭", "○ 对方三类型俱全时触发（双方换将军）", "cond"],
         ["第四层·天罚", `🖱 主动使用（${cd.l4}）`, "act"],
         ["第五层·神迹克制", "○ 对方使用圣迹响应时生效", "cond"],
       ]);
@@ -1286,7 +1339,14 @@ const UI = {
     const s = Game.unitStats(u);
     const P = Game.unitStatParts(u);
     let extra = "";
-    if (u.kind === "daimyo") extra = `命值 ${u.hp}/20`;
+    if (u.kind === "daimyo") {
+      extra = `命值 ${u.hp}/${Game.daimyoHpCap(u)}`;
+      const l2 = Game.l2Info(u);
+      if (l2) {
+        const t = Game.l2TargetOf(u);
+        extra += ` ／ ${l2.type}目标：${t ? t.card.name : "无"}`;
+      }
+    }
     const eq = [u.eq.blade ? `刃【${u.eq.blade.name}】` : "", u.eq.armor ? `铠【${u.eq.armor.name}】` : "", u.eq.mount ? `骑【${u.eq.mount.name}】` : ""].filter(Boolean).join("，") || "无";
     const card = { type: u.kind === "samurai" ? "samurai" : u.kind === "daimyo" ? "daimyo" : "noble", card: u.card };
     const hist = (u.hist || []).slice().reverse().map(h =>
@@ -1359,6 +1419,23 @@ const UI = {
     this.showModal("🙌 绝境来援 · 特殊召唤", `你已连续 <b>3</b> 个己方回合没有人物牌（场上与手牌皆无）！<br>可从<b>弃牌堆</b>随机召唤一位人物（武士／公卿／大名）到己方战场。<br><span style="color:#ff9a8a">弃牌堆现有人物牌 ${info.count} 张。召唤后计数重置。</span>`, [
       { label: "执行特殊召唤", cls: "primary", fn: () => { this.hideModal(); cb(true); } },
       { label: "放弃（本次不召唤）", fn: () => { this.hideModal(); cb(false); } },
+    ]);
+  },
+
+  /* 八咫乌引路：双方各选「更换天皇牌 / 更换将军牌 / 放弃」 */
+  askYatagarasu(p, cb) {
+    const st = Game.state;
+    const left = (list, type) => {
+      const taken = new Set(st.players.map(x => (type === "emperor" ? x.emperor : x.shogun).name));
+      const disc = new Set(st.discard.filter(d => d.type === type).map(d => d.card.name));
+      return list.filter(c => !taken.has(c.name) && !disc.has(c.name)).length;
+    };
+    const empLeft = left(CARDS.emperors, "emperor");
+    const shoLeft = left(CARDS.shoguns, "shogun");
+    this.showModal("🕊 八咫乌引路", `八咫乌为双方引路：<b>${p.name}</b> 可在「更换天皇牌」与「更换将军牌」中<b>二选一</b>（随机抽取，原牌置入弃牌堆），亦可放弃。<br><span style="color:#ff9a8a">天皇换位时，原天皇身上的宝物一并弃置。当前可抽：天皇 ${empLeft} 张／将军 ${shoLeft} 张。</span>`, [
+      { label: empLeft ? "更换天皇牌" : "更换天皇牌（牌池已空）", cls: "primary", fn: () => { this.hideModal(); cb("emperor"); }, disabled: !empLeft },
+      { label: shoLeft ? "更换将军牌" : "更换将军牌（牌池已空）", fn: () => { this.hideModal(); cb("shogun"); }, disabled: !shoLeft },
+      { label: "放弃（不更换）", fn: () => { this.hideModal(); cb(null); } },
     ]);
   },
 
@@ -1778,7 +1855,7 @@ const UI = {
     Game.clearSave(); // 清档后走完整开局仪式
     Game.state = null;
     this.mode = "idle"; this.combatMode = false; this.bypass = false;
-    this.selectedAttacker = null; this.sacTarget = -1; this.eqHandIdx = -1;
+    this.selectedAttacker = null; this.sacTarget = -1; this.eqHandIdx = -1; this.l2DaimyoUid = null;
     this._prevStats = {};
     this.el("logList").innerHTML = "";
     this.el("flowList").innerHTML = "";

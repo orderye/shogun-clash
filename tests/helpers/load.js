@@ -41,6 +41,7 @@ const DEFAULT_ANSWERS = {
   askCounterCalamity: false,
   askRankBlock: false,
   askNegate: null,
+  askYatagarasu: null,
 };
 
 const ASK_METHODS = Object.keys(DEFAULT_ANSWERS);

@@ -48,6 +48,7 @@ const Game = {
       this.state = st;
       this.backfillCardFields(st); // 旧存档补齐联动字段（装具 synX/synY、兵刃/骑具 soul）
       this.backfillArmorSynergy(); // 已装备装具缺配套记录 → 补算
+      this.migrateCastleAmp(st); // 城池增幅由「一次性写入基础值」改为常置光环 → 回退旧档写入值
       return st;
     } catch (e) { return null; }
   },
@@ -79,6 +80,29 @@ const Game = {
         if (u.eq && u.eq.armor && !(u.hist || []).some(h => h.src === "装具配套")) {
           try { this.armorSynergy(pi, u); } catch (e) {}
         }
+      }
+    }
+  },
+  /* 旧存档兼容：城池增幅曾按「放置时一次性」写入 baseAtk/baseDef，现改为常置光环。
+     扫描单位 hist 里的一次性增幅记录，把数值回退掉，避免旧档多算一遍。 */
+  migrateCastleAmp(st) {
+    for (const pl of st.players || []) {
+      for (const u of pl.field || []) {
+        if (!Array.isArray(u.hist)) continue;
+        const legacy = u.hist.filter(h => h.src === "城池增幅一" || h.src === "城池增幅二");
+        if (!legacy.length) continue;
+        for (const h of legacy) {
+          const n = parseInt((h.desc || "").match(/(\d+)/)?.[1] || "0");
+          if (!n) continue;
+          if (h.src === "城池增幅二" && (h.desc || "").includes("装具")) {
+            u.baseDef = Math.max(0, u.baseDef - n);
+          } else {
+            u.baseAtk = Math.max(0, u.baseAtk - n);
+            if (h.src === "城池增幅一") u.baseDef = Math.max(0, u.baseDef - n);
+          }
+        }
+        u.hist = u.hist.filter(h => h.src !== "城池增幅一" && h.src !== "城池增幅二");
+        u.hist.push({ t: st.turnNo || 0, src: "存档迁移", desc: "城池增幅改为常置光环，回退旧档一次性写入值" });
       }
     }
   },
@@ -217,7 +241,7 @@ const Game = {
       if (tr.includes("兵刃之锐")) bladeBoost += parseInt(tr.match(/(\d+)/)[1]);
       if (tr.includes("装具之固")) armorBoost += parseInt(tr.match(/(\d+)/)[1]);
     }
-    // 城池（城威持续；增幅一/二为放置时一次性效果，不在此叠加）
+    // 城池（城威与增幅一/二均为常置光环；攻防类增幅在 unitStatParts 中按单位结算）
     const z = this.state.zone;
     if (z && z.type === "castle" && z.owner === pi) {
       atk += z.card.ao; def += z.card.ao; // 城威
@@ -243,29 +267,8 @@ const Game = {
         }
       }
     }
-    // 大名第二层 · 辅佐（励武：己方武士攻击 +N；护卿：己方公卿防御 +N；自动指定场上首个目标）
-    for (const u of p.field) {
-      if (u.kind === "daimyo" && u.card.l2) {
-        const m = u.card.l2.match(/(励武|护卿)\s*·?\s*([^+]*?)\s*\+?(\d+)/);
-        if (m && m[1] === "励武") { for (const w of p.field) if (w.kind === "samurai") { atk += parseInt(m[3]); break; } }
-        else if (m && m[1] === "护卿") { for (const w of p.field) if (w.kind === "noble" && w.uid !== u.uid) { def += parseInt(m[3]); break; } }
-      }
-    }
-    // 大名第三层 · 城盟（己方城池）：名城/大城 → 该大名攻防各 +1
-    if (z && z.type === "castle" && z.owner === pi && (z.card.tier === "名城" || z.card.tier === "大城")) {
-      for (const u of p.field) if (u.kind === "daimyo") { atk += 1; def += 1; }
-    }
-    // 大名第四层 · 事件之势（事件区为事件牌时生效）：文衡公卿防+1 / 武备武士攻+1 / 坚城大名防+1 / 锋芒大名攻+1
-    if (z && z.type === "process") {
-      for (const u of p.field) {
-        if (u.kind !== "daimyo" || !u.card.l4) continue;
-        const f = u.card.l4;
-        if (f.includes("文衡")) { for (const w of p.field) if (w.kind === "noble") def += 1; }
-        else if (f.includes("武备")) { for (const w of p.field) if (w.kind === "samurai") atk += 1; }
-        else if (f.includes("坚城")) { for (const w of p.field) if (w.kind === "daimyo") def += 1; }
-        else if (f.includes("锋芒")) { for (const w of p.field) if (w.kind === "daimyo") atk += 1; }
-      }
-    }
+    // 大名第二～四层（辅佐/城盟/事件之势）与事件、城池的攻防均为「按单位结算」，
+    // 统一在 unitStatParts 中计算，此处不再重复（避免两份规则各自漂移）。
     return { atk, def, blade: blade + bladeBoost, armor: armor + armorBoost, mount, samuraiAtk };
   },
 
@@ -378,6 +381,40 @@ const Game = {
     return true;
   },
 
+  /* 大名第二层 · 辅佐：励武（指定一位己方武士 +N 攻击）／护卿（指定一位己方公卿 +N 防御）
+     目标由玩家指定（AI 取首个合法目标）；目标离场后自动改指首个合法目标，仍可重新指定 */
+  l2Info(d) {
+    if (!d.card || !d.card.l2) return null;
+    const m = d.card.l2.match(/(励武|护卿)\s*·?\s*([^+]*?)\s*\+?(\d+)/);
+    if (!m) return null;
+    return { type: m[1], kind: m[1] === "励武" ? "samurai" : "noble", val: parseInt(m[3]) };
+  },
+  /* 解析该大名当前实际生效的辅佐目标（指定失效时回退为首个合法目标） */
+  l2TargetOf(d) {
+    const info = this.l2Info(d);
+    if (!info) return null;
+    const p = this.state.players[d.pi];
+    const cur = d.l2Target != null ? p.field.find(x => x.uid === d.l2Target && x.kind === info.kind) : null;
+    if (cur) return cur;
+    return p.field.find(x => x.kind === info.kind) || null;
+  },
+  /* 玩家指定辅佐目标 */
+  designateL2Target(pi, daimyoUid, targetUid) {
+    const p = this.state.players[pi];
+    const d = p.field.find(x => x.uid === daimyoUid && x.kind === "daimyo");
+    if (!d) return false;
+    const info = this.l2Info(d);
+    if (!info) return false;
+    const t = p.field.find(x => x.uid === targetUid && x.kind === info.kind);
+    if (!t) return false;
+    d.l2Target = t.uid;
+    d.hist = d.hist || [];
+    d.hist.push({ t: this.state.turnNo, src: "辅佐·" + info.type, desc: `指定【${t.card.name}】` });
+    this.log(`【${d.card.name}】${info.type}：辅佐目标指定为【${t.card.name}】`);
+    UI.renderAll();
+    return true;
+  },
+
   /* 攻防数值构成明细：返回 { atk, def, rawAtk, rawDef, AP, DP }（AP/DP = [{k,v}]） */
   unitStatParts(u) {
     const st = this.state;
@@ -403,7 +440,7 @@ const Game = {
       if (tr.includes("装具之固")) armorBoost += parseInt(tr.match(/(\d+)/)[1]);
       // 御·骑具之灵只影响躲避率，在 unitDodge 中结算，此处不叠加攻防
     }
-    // 城池（城威持续；增幅一/二为放置时一次性，不在此叠加）
+    // 城池（城威为常置光环；增幅一/二亦为常置光环，在下方按类型/装备结算）
     const z = st.zone;
     if (z && z.type === "castle") {
       if (z.owner === pi) {
@@ -413,6 +450,12 @@ const Game = {
         atk += z.card.ap; def += z.card.ap;
         AP.push({ k: "城池城威·敌方", v: z.card.ap }); DP.push({ k: "城池城威·敌方", v: z.card.ap });
       }
+    }
+    // 城池第一层·增幅一（类型单位数值）：己方城池时，己方对应类型单位攻防各 +N
+    const amp = this.castleAmpInfo(pi);
+    if (amp && amp.kind && amp.kind === KIND_CN[u.kind] && amp.unit) {
+      atk += amp.unit; def += amp.unit;
+      AP.push({ k: `城池增幅一·${amp.kind}`, v: amp.unit }); DP.push({ k: `城池增幅一·${amp.kind}`, v: amp.unit });
     }
     // 事件第一层
     if (z && z.type === "process") {
@@ -444,12 +487,16 @@ const Game = {
         // ⑤ 骑具只影响躲避率，在 unitDodge / aura 中结算，此处不叠加攻防
       }
     }
-    // 大名 l2 励武/护卿
+    // 大名 l2 励武/护卿（仅对当前指定的唯一目标生效）
     for (const u2 of p.field) {
       if (u2.kind !== "daimyo" || !u2.card.l2) continue;
       const m = u2.card.l2.match(/(励武|护卿)\s*·?\s*([^+]*?)\s*\+?(\d+)/);
-      if (m && m[1] === "励武" && u.kind === "samurai") { const v = parseInt(m[3]); atk += v; AP.push({ k: `大名【${u2.card.name}】励武`, v }); }
-      else if (m && m[1] === "护卿" && u.kind === "noble" && u.uid !== u2.uid) { const v = parseInt(m[3]); def += v; DP.push({ k: `大名【${u2.card.name}】护卿`, v }); }
+      if (!m) continue;
+      const target = this.l2TargetOf(u2);
+      if (!target || target.uid !== u.uid) continue;
+      const v = parseInt(m[3]);
+      if (m[1] === "励武" && u.kind === "samurai") { atk += v; AP.push({ k: `大名【${u2.card.name}】励武`, v }); }
+      else if (m[1] === "护卿" && u.kind === "noble") { def += v; DP.push({ k: `大名【${u2.card.name}】护卿`, v }); }
     }
     // 大名 l4 事件之势（事件区为事件牌时）
     if (z && z.type === "process") {
@@ -469,9 +516,10 @@ const Game = {
     }
     // 装备（bladeBonus/armorBonus 含城池共鸣/大城比例）
     let bladeBonus = 0, armorBonus = 0;
+    let hasBladeEffect = !!u.eq.blade; // 是否享受兵刃效果（自身装备或王城/名城共享）
     if (u.eq.blade) {
       let b = u.eq.blade.atk;
-      if (u.kind === "samurai" && u.fx && u.fx.includes("持刃")) b += 1;
+      if (u.kind === "samurai" && !u.purged && u.fx && u.fx.includes("持刃")) b += 1;
       bladeBonus += b;
     }
     if (u.eq.armor) armorBonus += u.eq.armor.dfs;
@@ -483,7 +531,7 @@ const Game = {
       if (own && (tier === "王城" || tier === "名城")) {
         if (!u.eq.blade && (u.kind === "daimyo" || u.kind === "samurai")) {
           const sharer = team.find(x => x.eq.blade && x.uid !== u.uid);
-          if (sharer) bladeBonus += sharer.eq.blade.atk;
+          if (sharer) { bladeBonus += sharer.eq.blade.atk; hasBladeEffect = true; }
         }
       }
       if (!own && (tier === "王城" || tier === "名城")) {
@@ -494,6 +542,11 @@ const Game = {
       }
       if (own && tier === "大城" && u.eq.blade) bladeBonus += Math.ceil(u.eq.blade.atk * 0.5);
       if (!own && tier === "大城" && u.eq.blade) bladeBonus -= Math.floor(u.eq.blade.atk * 0.3);
+    }
+    // 城池第一层·增幅二（装备数值）：己方城池时，己方兵刃/装具数值 +N（仅对享受该装备效果的单位）
+    if (amp && amp.equip && amp.equipN) {
+      if (amp.equip === "blade" && hasBladeEffect) bladeBonus += amp.equipN;
+      else if (amp.equip === "armor" && u.eq.armor) armorBonus += amp.equipN;
     }
     atk += bladeBonus; if (bladeBonus !== 0) AP.push({ k: "兵刃" + (u.eq.blade ? "【" + u.eq.blade.name + "】" : "（共享）"), v: bladeBonus });
     def += armorBonus; if (armorBonus !== 0) DP.push({ k: "装具" + (u.eq.armor ? "【" + u.eq.armor.name + "】" : "（共享）"), v: armorBonus });
@@ -521,16 +574,16 @@ const Game = {
     if (u.eq.armor && armorBoost !== 0) { def += armorBoost; DP.push({ k: "装具光环（固/④/城增）", v: armorBoost }); }
     // 武士之锋（仅武士）
     if (u.kind === "samurai" && samuraiAtk) { atk += samuraiAtk; AP.push({ k: "天皇·武士之锋", v: samuraiAtk }); }
-    // 骑术（武士+骑具）
-    if (u.kind === "samurai" && u.eq.mount && u.fx && u.fx.includes("骑术")) { def += 1; DP.push({ k: "骑术", v: 1 }); }
+    // 骑术（武士+骑具；增幅归零后三层特效失效）
+    if (u.kind === "samurai" && !u.purged && u.eq.mount && u.fx && u.fx.includes("骑术")) { def += 1; DP.push({ k: "骑术", v: 1 }); }
     // 宝物目标加成
     for (const tr of p.treasure) {
       if (tr.tgt.samurai === u.uid && u.kind === "samurai") { def += tr.card.s1; DP.push({ k: "宝物【" + tr.card.name + "】武士", v: tr.card.s1 }); }
       if (tr.tgt.noble === u.uid && u.kind === "noble") { atk += tr.card.n1; AP.push({ k: "宝物【" + tr.card.name + "】公卿", v: tr.card.n1 }); }
       if (tr.tgt.daimyo === u.uid && u.kind === "daimyo") { atk += tr.card.d1; def += tr.card.d1; AP.push({ k: "宝物【" + tr.card.name + "】大名", v: tr.card.d1 }); DP.push({ k: "宝物【" + tr.card.name + "】大名", v: tr.card.d1 }); }
     }
-    // 事件立场（fx 第三段）
-    if (u.kind === "samurai" && z && z.type === "process" && u.fx) {
+    // 事件立场（fx 第三段；增幅归零后三层特效失效）
+    if (u.kind === "samurai" && !u.purged && z && z.type === "process" && u.fx) {
       const parts = u.fx.split("·");
       if (parts.length >= 3) {
         const l3 = parts[2];
@@ -560,13 +613,52 @@ const Game = {
     for (const tr of [em.t1, em.t2, em.t3]) if (tr.includes("骑具之灵")) mountBoost += parseInt(tr.match(/(\d+)/)[1]);
     mountBoost += (this.aura(this.state.players[u.pi]).mount || 0); // 公卿 ⑤ 骑具 +X%（仅对已装备骑具的单位生效）
     if (u.eq.mount) d = u.eq.mount.dodge + mountBoost;
-    // 的卢之魂 · 效果 1：己方生命低于对方 → 躲避率随机 +5%～10%（动态实时判定）
+    else {
+      // 王城第二层：己方骑具可同时作用于两名己方单位（装备者 + 一名未装备骑具的己方单位）
+      const shared = this.sharedMountFor(u);
+      if (shared) d = shared.dodge + mountBoost;
+    }
+    // 的卢之魂 · 效果 1：己方生命低于对方 → 躲避率随机 +5%～10%（动态实时判定；仅装备者）
     if (u.eq.mount && u.eq.mount.soul === 1) {
       const p = this.state.players[u.pi], opp = this.state.players[1 - u.pi];
       if (p.hp < opp.hp) d += 5 + Math.floor(Math.random() * 6); // 5~10 随机整数
     }
-    // 骑具躲避仅对装备了骑具的单位生效（不共享、不作用于未装备单位）
+    // 骑具躲避仅对装备骑具（或经王城共享）的单位生效；未装备/未共享的单位为 0
     return Math.min(d, 90);
+  },
+
+  /* 王城第二层：己方骑具同时作用于两名己方单位——装备者 + 按战场区顺序配对的一名未装备骑具单位 */
+  sharedMountFor(u) {
+    const st = this.state;
+    const z = st.zone;
+    if (!z || z.type !== "castle" || z.owner !== u.pi || z.card.tier !== "王城") return null;
+    if (u.eq.mount) return null;
+    const field = st.players[u.pi].field;
+    const mounts = field.filter(x => x.eq.mount);
+    if (!mounts.length) return null;
+    const borrowers = field.filter(x => !x.eq.mount);
+    const idx = borrowers.indexOf(u);
+    return idx >= 0 && idx < mounts.length ? mounts[idx].eq.mount : null;
+  },
+
+  /* 王城第二层：己方骑具躲避判定成功 → 敌方选一位武士，攻击值 +1（永久） */
+  mountDodgeReward(defPi) {
+    const st = this.state;
+    const z = st.zone;
+    if (!z || z.type !== "castle" || z.owner !== defPi || z.card.tier !== "王城") return;
+    const atkP = st.players[1 - defPi];
+    const cands = atkP.field.filter(x => x.kind === "samurai");
+    if (!cands.length) {
+      this.zHist(z, "第二层·装备共鸣·骑具", "躲避成功，但敌方战场区无武士，奖励不结算", z.owner);
+      this.log("🏯 王城骑具共鸣：躲避成功，但敌方战场区无武士，奖励不结算");
+      return;
+    }
+    const pick = cands.reduce((a, b) => (this.unitStats(b).atk > this.unitStats(a).atk ? b : a));
+    pick.extraAtk = (pick.extraAtk || 0) + 1;
+    pick.hist = pick.hist || [];
+    pick.hist.push({ t: st.turnNo, src: "王城·骑具共鸣", desc: "敌方骑具躲避成功，攻击 +1（永久）" });
+    this.zHist(z, "第二层·装备共鸣·骑具", `躲避成功：敌方武士【${pick.card.name}】攻击 +1（永久）`, z.owner);
+    this.log(`🏯 王城骑具共鸣：躲避成功，敌方武士【${pick.card.name}】攻击 +1（永久）`);
   },
 
   /* ---------- 回合流程 ---------- */
@@ -627,31 +719,12 @@ const Game = {
       }
     }
     } // 天皇效果（含失效跳过）
-    // 城池增幅（将军生命/类型单位/装备）已改为放置时一次性生效（每张城池每局一次）
-    const z = st.zone;
-    // 事件第二层（天佑将军：每张事件牌每局仅触发一次）
-    if (z && z.type === "process") {
-      if (z._tianyouUsed) {
-        this.log(`事件【${z.card.name}】天佑已在本局使用过，不再生效`);
-      } else {
-        z._tianyouUsed = true;
-        const own = z.owner === st.cur;
-        const v = own ? z.card.a2o : z.card.a2p;
-        p.hp = Math.min(p.maxHp || 100, p.hp + v);
-        this.hpEvent(st.cur, -v, "事件天佑", p.hp);
-        this.zHist(z, "第二层·天佑将军", `施展对象：${p.name} 将军 +${v}（每局一次）`, z.owner);
-        this.log(`事件【${z.card.name}】天佑：${p.name} 将军 +${v} → ${p.hp}`);
-      }
-      // 大名第四层 · 天命：事件在时己方将军一次性 +10（每张天命大名一次）
-      for (const u of p.field) {
-        if (u.kind === "daimyo" && u.card.l4 && u.card.l4.includes("天命") && !u._tianmingUsed) {
-          u._tianmingUsed = true;
-          p.hp = Math.min(p.maxHp || 100, p.hp + 10);
-          this.hpEvent(st.cur, -10, "天命", p.hp);
-          this.log(`⚡ 大名【${u.card.name}】天命：事件在时，${p.name} 将军 +10 → ${p.hp}`);
-        }
-      }
-    }
+    // 城池增幅一（将军生命）：常置光环，每回合己方回合开始 +N
+    this.castleAmpTurnStart(st.cur);
+    // 事件第二层 · 天佑将军（每回合开始时结算）
+    this.eventTianyou(st.cur);
+    // 大名第四层 · 天命：事件在区时，己方将军一次性 +10（每名天命大名一次）
+    this.checkTianming(st.cur);
     // 将军技能：自疗（每 3 回合一次）＋ 压制（每回合）
     const shoSkills = this.shogunSkills(p.shogun);
     let healed = false;
@@ -711,6 +784,54 @@ const Game = {
     UI.renderAll();
   },
 
+  /* 城池第一层增幅解析：{ hp, kind, unit, equip, equipN }（仅己方城池在区时非 null）
+     amp1：将军生命 +N 或 大名/公卿/武士 +N（二选一印于卡面）
+     amp2：兵刃 +N 或 装具 +N */
+  castleAmpInfo(pi) {
+    const z = this.state.zone;
+    if (!z || z.type !== "castle" || z.owner !== pi) return null;
+    const m1 = (z.card.amp1 || "").match(/(将军生命|大名|公卿|武士)\s*\+?(\d+)/);
+    const m2 = (z.card.amp2 || "").match(/(兵刃|装具)\s*\+?(\d+)/);
+    return {
+      hp: m1 && m1[1] === "将军生命" ? parseInt(m1[2]) : 0,
+      kind: m1 && m1[1] !== "将军生命" ? m1[1] : null,
+      unit: m1 ? parseInt(m1[2]) : 0,
+      equip: m2 ? (m2[1] === "兵刃" ? "blade" : "armor") : null,
+      equipN: m2 ? parseInt(m2[2]) : 0,
+    };
+  },
+
+  /* 城池增幅一（将军生命）：常置光环，每回合己方回合开始 +N（上限为将军总生命） */
+  castleAmpTurnStart(pi) {
+    const amp = this.castleAmpInfo(pi);
+    if (!amp || !amp.hp) return 0;
+    const p = this.state.players[pi], z = this.state.zone;
+    const before = p.hp;
+    p.hp = Math.min(p.maxHp || 100, p.hp + amp.hp);
+    const gained = p.hp - before;
+    this.hpEvent(pi, -gained, "城池增幅一", p.hp);
+    this.zHistKeyed(z, "第一层·城威·增幅一", `施展对象：${p.name} 将军 +${gained}（每回合开始）`, z.owner);
+    this.log(`🏯 城池【${z.card.name}】增幅一：${p.name} 将军 +${gained} → ${p.hp}`);
+    return gained;
+  },
+
+  /* 事件第二层 · 天佑将军：每回合开始时，事件使用者视角的「己方」将军 +a2o、「对方」将军 +a2p */
+  eventTianyou(pi) {
+    const st = this.state;
+    const z = st.zone;
+    if (!z || z.type !== "process") return 0;
+    const p = st.players[pi];
+    const v = z.owner === pi ? z.card.a2o : z.card.a2p;
+    if (!v) return 0;
+    const before = p.hp;
+    p.hp = Math.min(p.maxHp || 100, p.hp + v);
+    const gained = p.hp - before;
+    this.hpEvent(pi, -gained, "事件天佑", p.hp);
+    this.zHistKeyed(z, "第二层·天佑将军", `施展对象：${p.name} 将军 +${gained}（每回合开始）`, z.owner);
+    this.log(`事件【${z.card.name}】天佑：${p.name} 将军 +${gained} → ${p.hp}`);
+    return gained;
+  },
+
   /* 阶段二 · 抽牌 */
   drawCard(p) {
     if (p.drawnThisTurn) { this.log("本回合已抽过牌"); return null; }
@@ -748,6 +869,16 @@ const Game = {
       if (s === "mount") this.mountLeaves(pi, eq); // 八百里分麾下炙：骑具下场联动
     }
     t.extraAtk = 0; t.extraDef = 0; t.purged = true;
+    // 坚守累积（写入 baseDef）随增幅归零一并回退
+    if (t.guardBonus) { t.baseDef = Math.max(0, t.baseDef - t.guardBonus); t.guardBonus = 0; }
+    // 公卿城池加成「装备替死」造成的减半损失亦随增幅归零一并回收
+    if (t.halveLoss) {
+      t.baseAtk += t.halveLoss.atk;
+      t.baseDef += t.halveLoss.def;
+      t.hist = t.hist || [];
+      t.hist.push({ t: this.state.turnNo, src: "御·庇护", desc: `回收减半损失：攻 +${t.halveLoss.atk}／防 +${t.halveLoss.def}` });
+      t.halveLoss = null;
+    }
     t.hist = t.hist || [];
     t.hist.push({ t: this.state.turnNo, src: "御·庇护", desc: "增幅归零（装备弃置、特效失效）" });
     this.eHist(pi, "御·庇护", `庇护${KIND_CN[t.kind]}【${t.card.name}】`);
@@ -770,7 +901,7 @@ const Game = {
     p.hand.splice(hi, 1);
     const u = this.newUnit(pi, "samurai", c.card);
     p.field.push(u);
-    this.castleL4OnUnitEnter(pi, u);
+    this.onUnitEntered(pi, u);
     p.summonedThisTurn++;
     if (UI.unitEnter) UI.unitEnter(u.uid);
     this.log(`${p.name} 召唤武士【${c.card.name}】`, pi === 0 ? "me" : "ai", c);
@@ -801,7 +932,7 @@ const Game = {
     }
     const u = this.newUnit(pi, c.type, c.card);
     p.field.push(u);
-    this.castleL4OnUnitEnter(pi, u);
+    this.onUnitEntered(pi, u);
     p.graceCnt = 0;
     p.summonedDaimyoOrNoble = true;
     if (UI.unitEnter) UI.unitEnter(u.uid);
@@ -821,7 +952,7 @@ const Game = {
     p.hand.splice(hi, 1);
     const gu = this.newUnit(pi, c.type, c.card);
     p.field.push(gu);
-    this.castleL4OnUnitEnter(pi, gu);
+    this.onUnitEntered(pi, gu);
     p.graceCnt = 0;
     p.summonedDaimyoOrNoble = true;
     if (UI.unitEnter) UI.unitEnter(gu.uid);
@@ -851,7 +982,7 @@ const Game = {
     st.discard.splice(di, 1);
     const gu = this.newUnit(pi, pick.type, pick.card);
     p.field.push(gu);
-    this.castleL4OnUnitEnter(pi, gu);
+    this.onUnitEntered(pi, gu);
     p.noUnitStreak = 0; // 触发后重置计数
     if (UI.unitEnter) UI.unitEnter(gu.uid);
     this.log(`🙌 绝境来援！${p.name} 连续 3 回合无人物牌，从弃牌堆特殊召唤 ${KIND_CN[pick.type]}【${gu.card.name}】`, p.isAI ? "ai" : "me", pick);
@@ -909,7 +1040,7 @@ const Game = {
     gu.guoshiGuard = true; // 国士无双盾：不可攻击、不给溢出、数值恒 0
     gu.summonedTurn = st.turnNo;
     p.field.push(gu);
-    this.castleL4OnUnitEnter(pi, gu);
+    this.onUnitEntered(pi, gu);
     if (UI.unitEnter) UI.unitEnter(gu.uid);
     if (UI.guoshiEffect) UI.guoshiEffect(); // 中央特效：「国士无双」四字从上到下排开
     this.log(`♟ 国士无双：${p.name} 战场区无牌且生命低于对方，从弃牌堆召唤盾武士【${gu.card.name}】（攻 0 防 0，不可攻击，受一次攻击下场，无溢出）`, p.isAI ? "ai" : "me", pick);
@@ -979,15 +1110,63 @@ const Game = {
   },
 
   newUnit(pi, kind, card) {
-    return {
+    const u = {
       uid: this.uid(), pi, kind, card,
       baseAtk: card.atk, baseDef: card.dfs,
-      hp: kind === "daimyo" ? 20 : null, // 大名命值（替死10+本命10）
+      hp: kind === "daimyo" ? 20 : null, // 大名命值（替死10+本命10；己方王城在区时 +10）
       eq: { blade: null, armor: null, mount: null },
       fx: card.fx || "", extraAtk: 0, extraDef: 0,
       summonedTurn: this.state.turnNo,
       alive: true, hist: [{ t: this.state.turnNo, src: "登场", desc: "召唤上场" }],
     };
+    if (kind === "daimyo") u.hp = this.daimyoHpCap(u);
+    return u;
+  },
+
+  /* 装备成长概率：卡面 grow + 事件第一层「装备共鸣」（己方 +10%／对方 +5%）
+     + 城池第三层「概率倾斜」（大城只作用于骑具、装具，故仅装具成长受影响）；上限 100% */
+  growChance(u, slot) {
+    const eq = u.eq && u.eq[slot];
+    if (!eq) return 0;
+    let v = eq.grow || 0;
+    const z = this.state.zone;
+    if (z && z.type === "process") v += z.owner === u.pi ? 10 : 5;
+    if (z && z.type === "castle" && z.card.tier === "大城" && slot === "armor") v += z.owner === u.pi ? 5 : -5;
+    return Math.max(0, Math.min(100, v));
+  },
+  /* 装备成长：掷骰命中则该装备加成 +1（永久累积、无上限） */
+  growEquip(u, slot) {
+    const eq = u.eq && u.eq[slot];
+    if (!eq) return false;
+    const chance = this.growChance(u, slot);
+    if (Math.random() * 100 > chance) return false;
+    if (slot === "blade") eq.atk = (eq.atk || 0) + 1;
+    else eq.dfs = (eq.dfs || 0) + 1;
+    u.hist = u.hist || [];
+    u.hist.push({ t: this.state.turnNo, src: "装备成长", desc: `${TYPE_CN[slot]}【${eq.name}】加成 +1（${chance}%）` });
+    this.log(`📈 装备成长：【${eq.name}】加成 +1（掷骰 ${chance}%）`);
+    return true;
+  },
+
+  /* 大名命值上限：替死 10 + 本命 10 = 20；己方王城在区时额外一次「替死」（上限 30） */
+  daimyoHpCap(u) {
+    const z = this.state.zone;
+    if (z && z.type === "castle" && z.owner === u.pi && z.card.tier === "王城") return 30;
+    return 20;
+  },
+  /* 城盟随常置牌变化：命值超出上限的部分回收（王城被顶替 → 上限回落 20） */
+  refreshDaimyoHp(pi) {
+    const p = this.state.players[pi];
+    for (const u of p.field) {
+      if (u.kind !== "daimyo") continue;
+      const cap = this.daimyoHpCap(u);
+      if (u.hp > cap) {
+        u.hp = cap;
+        u.hist = u.hist || [];
+        u.hist.push({ t: this.state.turnNo, src: "城盟", desc: `命值上限回落至 ${cap}` });
+        this.log(`🏰 城盟：己方王城已不在区，大名【${u.card.name}】命值回落至 ${cap}`);
+      }
+    }
   },
 
   /* 阶段三 · 使用事件/城池 */
@@ -1008,15 +1187,21 @@ const Game = {
         own.hp = Math.min(own.maxHp || 100, own.hp + 5);
         this.hpEvent(old.owner, -5, "城池被顶替", own.hp);
         this.log(`城池【${old.card.name}】被顶替：${own.name} 将军 +5 → ${own.hp}`);
+        this.refreshDaimyoHp(old.owner); // 王城离区 → 己方大名命值上限回落
       } else if (old.type === "process") {
         this.settleEvent(old); // 事件第五层 · 清算（X/Y）
       }
       this.log(`【${old.card.name}】被顶替下场（进入弃牌堆）`);
     }
     st.zone = { type: c.type, card: c.card, owner: pi, hist: [{ t: st.turnNo, src: "放置", desc: `${p.name} 放置 · 专属权：${p.name}`, owner: pi }] };
+    // 常置牌易主 → 城盟（大名命值上限）随之为新常置牌重新判定
+    this.refreshDaimyoHp(pi);
+    this.refreshDaimyoHp(1 - pi);
     if (c.type === "castle") {
-      this.zHist(st.zone, "第一层·城威", `己方攻防 +${c.card.ao}／敌方 +${c.card.ap}；增幅一 ${c.card.amp1}、增幅二 ${c.card.amp2}`, pi);
-      this.zHist(st.zone, "第二层·装备共鸣", c.card.tier === "大城" ? "己方兵刃 +50%／敌方兵刃 −30%" : "兵刃/装具可同时作用两位", pi);
+      this.zHist(st.zone, "第一层·城威", `己方攻防 +${c.card.ao}／敌方 +${c.card.ap}；增幅一 ${c.card.amp1}、增幅二 ${c.card.amp2}（常置光环）`, pi);
+      this.zHist(st.zone, "第二层·装备共鸣", c.card.tier === "大城" ? "己方兵刃 +50%／敌方兵刃 −30%"
+        : c.card.tier === "王城" ? "兵刃/装具可同时作用两位；己方骑具亦同时作用两位，躲避成功令敌方武士攻击 +1"
+        : "兵刃/装具可同时作用两位（骑具不共享）", pi);
       this.zHist(st.zone, "第三层·概率倾斜", c.card.tier === "王城" ? "己方概率 +10%／敌方 +5%" : "己方 +5%／敌方 −5%", pi);
     } else {
       this.zHist(st.zone, "第一层·攻防洪流", `己方攻防 +${c.card.a1o}／敌方 +${c.card.a1p}`, pi);
@@ -1030,21 +1215,24 @@ const Game = {
       this.hpEvent(1 - pi, 5, "城池【" + c.card.name + "】", opp.hp);
       this.log(`${p.name} 放置城池【${c.card.name}】（${c.card.tier}）：对方将军 −5 → ${opp.hp}`, p.isAI ? "ai" : "me", c);
       if (opp.hp <= 0) { this.win(1 - pi); return true; }
-      // 城池两种增幅（每张每局仅一次）：放置时一次性结算
-      this.castleAmpOnce(pi, c);
-      // 王城城盟：己方大名命值上限 +10（额外一次替死）
+      // 王城城盟：己方在区大名命值上限 +10（额外一次替死）——对已在场与后登场的大名一致生效
       if (c.card.tier === "王城") {
         for (const u of p.field) {
-          if (u.kind === "daimyo" && u.hp < 30) {
-            u.hp = Math.min(30, u.hp + 10);
+          if (u.kind !== "daimyo") continue;
+          const cap = this.daimyoHpCap(u);
+          if (u.hp < cap) {
+            u.hp = cap;
             u.hist = u.hist || [];
-            u.hist.push({ t: st.turnNo, src: "王城城盟", desc: "额外一次替死，命值 +10" });
-            this.log(`🏰 王城城盟：大名【${u.card.name}】命值 +10（额外替死）→ ${u.hp}`);
+            u.hist.push({ t: st.turnNo, src: "王城城盟", desc: "额外一次替死，命值上限 +10" });
+            this.log(`🏰 王城城盟：大名【${u.card.name}】命值 ${cap}（额外替死）`);
           }
         }
       }
     } else {
       this.log(`${p.name} 放置事件【${c.card.name}】（第一层 己攻防+${c.card.a1o}/敌+${c.card.a1p}）`, p.isAI ? "ai" : "me", c);
+      // 大名第四层 · 天命：事件入场即结算（双方天命大名各自为己方将军 +10）
+      this.checkTianming(0);
+      this.checkTianming(1);
     }
     UI.renderAll();
     return true;
@@ -1064,6 +1252,31 @@ const Game = {
     z.hist = z.hist || [];
     z.hist.push({ t: this.state.turnNo, src, desc, owner: owner !== undefined ? owner : z.owner });
     if (z.hist.length > 30) z.hist.shift();
+  },
+  /* 每回合都会发生的常置效果（天佑、城池增幅）：同源记录只保留最新一条，避免刷掉其它历史 */
+  zHistKeyed(z, src, desc, owner) {
+    if (!z) return;
+    z.hist = z.hist || [];
+    const i = z.hist.findIndex(h => h.src === src);
+    const rec = { t: this.state.turnNo, src, desc, owner: owner !== undefined ? owner : z.owner };
+    if (i >= 0) z.hist[i] = rec;
+    else z.hist.push(rec);
+  },
+
+  /* 大名第四层 · 天命：事件在区时，己方将军一次性 +10（每名天命大名只结算一次） */
+  checkTianming(pi) {
+    const st = this.state;
+    const z = st.zone;
+    if (!z || z.type !== "process") return;
+    const p = st.players[pi];
+    for (const u of p.field) {
+      if (u.kind !== "daimyo" || !u.card.l4 || !u.card.l4.includes("天命")) continue;
+      if (u._tianmingUsed) continue;
+      u._tianmingUsed = true;
+      p.hp = Math.min(p.maxHp || 100, p.hp + 10);
+      this.hpEvent(pi, -10, "天命", p.hp);
+      this.log(`⚡ 大名【${u.card.name}】天命：事件在时，${p.name} 将军 +10 → ${p.hp}`);
+    }
   },
 
   /* 事件第五层 · 清算（X / Y 印记）：事件被顶替下场时结算双方伤害 */
@@ -1111,22 +1324,24 @@ const Game = {
 
   /* 王座更迭：双方从剩余将军牌池随机换将军（生命不变，原将军永久移出牌池） */
   swapShoguns() {
-    const st = this.state;
-    for (let pi = 0; pi < 2; pi++) {
-      const q = st.players[pi];
-      const taken = () => new Set(st.players.map(x => x.shogun.name));
-      const discarded = () => new Set(st.discard.filter(d => d.type === "shogun").map(d => d.card.name));
-      const t = taken(); const dd = discarded();
-      const pool = CARDS.shoguns.filter(s => !t.has(s.name) && !dd.has(s.name));
-      if (pool.length) {
-        const old = q.shogun;
-        st.discard.push({ type: "shogun", card: old });
-        q.shogun = pool[Math.floor(Math.random() * pool.length)];
-        this.log(`♻ 王座更迭：${q.name} 将军【${old.name}】下场，随机抽选【${q.shogun.name}】（生命 ${q.hp} 不变）`);
-      }
-    }
+    for (let pi = 0; pi < 2; pi++) this.swapShogun(pi);
   },
-  /* 单方更换天皇（随机剩余池，原天皇永久移出牌池） */
+  /* 单方更换将军（随机剩余池，生命不变，原将军永久移出牌池） */
+  swapShogun(pi) {
+    const st = this.state;
+    const q = st.players[pi];
+    const taken = () => new Set(st.players.map(x => x.shogun.name));
+    const discarded = () => new Set(st.discard.filter(d => d.type === "shogun").map(d => d.card.name));
+    const t = taken(); const dd = discarded();
+    const pool = CARDS.shoguns.filter(s => !t.has(s.name) && !dd.has(s.name));
+    if (!pool.length) { this.log(`♻ ${q.name} 将军换位：牌池已无可抽将军`); return false; }
+    const old = q.shogun;
+    st.discard.push({ type: "shogun", card: old });
+    q.shogun = pool[Math.floor(Math.random() * pool.length)];
+    this.log(`♻ ${q.name} 将军【${old.name}】下场，随机抽选【${q.shogun.name}】（生命 ${q.hp} 不变）`);
+    return true;
+  },
+  /* 单方更换天皇（随机剩余池，原天皇与宝物一同进弃牌堆、永久移出牌池） */
   swapEmperor(pi) {
     const st = this.state;
     const q = st.players[pi];
@@ -1137,10 +1352,53 @@ const Game = {
     if (pool.length) {
       const old = q.emperor;
       st.discard.push({ type: "emperor", card: old });
+      // 规则 3.11：更换天皇时，原天皇身上的宝物一并置入弃牌堆（触发宝物第五层下场）
+      if (q.treasure.length) {
+        for (const tr of q.treasure) st.discard.push({ type: "treasure", card: tr.card });
+        q.treasure = [];
+        this.treasureDownEffect(pi, "天皇换位");
+      }
       q.emperor = pool[Math.floor(Math.random() * pool.length)];
       this.eHist(pi, "天皇换位", `原【${old.name}】下场，抽选【${q.emperor.name}】`);
       this.log(`👑 ${q.name} 天皇换位：随机抽取【${q.emperor.name}】`);
-    } else this.log(`👑 ${q.name} 天皇换位：牌池已无可抽天皇`);
+      return true;
+    }
+    this.log(`👑 ${q.name} 天皇换位：牌池已无可抽天皇`);
+    return false;
+  },
+
+  /* 圣-09 八咫乌引路：双方各选「更换天皇牌 / 更换将军牌 / 放弃」（使用者先选，再对方） */
+  yatagarasuFlow(pi) {
+    const st = this.state;
+    const step = (i) => {
+      if (i >= 2) { UI.renderAll(); return; }
+      const qpi = i === 0 ? pi : 1 - pi;
+      const q = st.players[qpi], opp = st.players[1 - qpi];
+      if (q.isAI) {
+        // AI：逆境换将军，顺境放弃（不做额外收益判断，保持确定性）
+        this.applyYatagarasu(qpi, q.hp < opp.hp ? "shogun" : null);
+        step(i + 1);
+        return;
+      }
+      st.prompting = true;
+      UI.askYatagarasu(q, (pick) => {
+        st.prompting = false;
+        this.applyYatagarasu(qpi, pick);
+        step(i + 1);
+      });
+    };
+    step(0);
+  },
+  applyYatagarasu(pi, pick) {
+    const q = this.state.players[pi];
+    if (pick === "emperor") {
+      if (this.swapEmperor(pi)) this.eHist(pi, "八咫乌引路", "更换天皇牌");
+    } else if (pick === "shogun") {
+      if (this.swapShogun(pi)) this.eHist(pi, "八咫乌引路", "更换将军牌");
+    } else {
+      this.log(`🕊 八咫乌引路：${q.name} 放弃更换`);
+    }
+    UI.renderAll();
   },
 
   /* 御·骑具之灵：天皇拥有「骑具之灵」轨道时，大名亦可装备骑具（破格） */
@@ -1250,7 +1508,7 @@ const Game = {
     p.recruitTurnsLeft = 3; // 冷却 3 个己方回合
     const u = this.newUnit(pi, opt.kind, card.card);
     p.field.push(u);
-    this.castleL4OnUnitEnter(pi, u);
+    this.onUnitEntered(pi, u);
     if (UI.unitEnter) UI.unitEnter(u.uid);
     if (UI.effectBurst) UI.effectBurst(pi);
     this.log(`募兵（${info.tier}）：${p.name} 从${opt.src === "hand" ? "手牌" : "弃牌堆"}召唤 ${KIND_CN[opt.kind]}【${card.card.name}】（当回合即可攻击），将军 −${info.cost} → ${p.hp}`);
@@ -1394,6 +1652,10 @@ const Game = {
     asNegate = !!asNegate; // 第一层是否实际生效（消解了一次敌方攻击）
     p.hand.splice(hi, 1);
     this.state.discard.push(c);
+    if (c.type === "sacred") {
+      st.sacredUsedTurn = st.sacredUsedTurn || {};
+      st.sacredUsedTurn[pi] = st.turnNo; // 供灾厄第五层「神迹克制」判定（以圣迹响应即计入）
+    }
     const opp = this.state.players[1 - pi];
     if (UI.effectBurst) UI.effectBurst(pi);
     if (UI.showEventAnimation) UI.showEventAnimation(c); // 中央全屏动画（3 秒）
@@ -1480,13 +1742,22 @@ const Game = {
     return true;
   },
 
-  simpleEventEffect(pi, c) {
+  /* 灾厄第五层 · 神迹克制：对方本回合使用过圣迹牌 → 本灾厄第三、四层失效（第一、二层照常） */
+  calamityVoided(pi) {
     const st = this.state;
-    const p = this.state.players[pi];
-    const opp = this.state.players[1 - pi];
-    // 灾厄第二层 · 灾殃：对方拥有 X 类型单位 → 对方将军受其攻击值总和伤害，己方受一半（反噬）
-    if (c.type === "calamity" && c.card.x) {
-      const KM = { 武士: "samurai", 公卿: "noble", 大名: "daimyo" };
+    const rec = st.sacredUsedTurn && st.sacredUsedTurn[1 - pi];
+    return rec === st.turnNo;
+  },
+
+  /* 灾厄牌五层效果：第二层灾殃 → 第三层王座更迭 → 第四层天罚（第三、四层可被神迹克制） */
+  calamityLayers(pi, c) {
+    const st = this.state;
+    const p = st.players[pi], opp = st.players[1 - pi];
+    const KM = { 武士: "samurai", 公卿: "noble", 大名: "daimyo" };
+    const voided = this.calamityVoided(pi);
+    if (voided) this.log(`🛡 灾厄【${c.card.name}】第五层·神迹克制：对方本回合使用过圣迹牌，第三、四层失效`);
+    // 第二层 · 灾殃：对方拥有 X 类型单位 → 对方将军受其攻击值总和伤害，己方受一半（反噬）
+    if (c.card.x) {
       const X = KM[c.card.x] || c.card.x;
       const oppUnits = opp.field.filter(u => u.kind === X);
       if (oppUnits.length) {
@@ -1499,12 +1770,93 @@ const Game = {
         } else this.log(`💀 灾厄【${c.card.name}】灾殃：对方将军躲避成功`);
         const back = Math.floor(total / 2);
         if (back > 0) {
-          p.hp -= back;
-          this.hpEvent(pi, back, "灾殃反噬", p.hp);
-          this.log(`💀 灾殃反噬：己方将军 −${back} → ${p.hp}`);
+          if (Math.random() * 100 > this.effDodge(pi)) {
+            p.hp -= back;
+            this.hpEvent(pi, back, "灾殃反噬", p.hp);
+            this.log(`💀 灾殃反噬：己方将军 −${back} → ${p.hp}`);
+            if (p.hp <= 0) { this.win(1 - pi); return; }
+          } else this.log(`💀 灾殃反噬：己方将军躲避成功（${this.effDodge(pi)}%）`);
         }
       } else this.log(`灾殃：对方场上无 ${KIND_CN[X]} 类型单位，未触发`);
     }
+    if (voided) return;
+    // 第三层 · 王座更迭（通用）：对方战场区武士/公卿/大名俱全 → 双方更换将军牌（生命不变）
+    const oppAll = ["samurai", "noble", "daimyo"].every(k => opp.field.some(u => u.kind === k));
+    if (oppAll) {
+      this.swapShoguns();
+    } else {
+      this.log(`王座更迭条件不足：需对方战场区武士/公卿/大名俱全`);
+    }
+    // 第四层 · 天罚（按卡各异）
+    const l4 = c.card.l4 || "";
+    if (l4.includes("摧毁城池")) {
+      const z = st.zone;
+      if (z && z.type === "castle") {
+        this.zHist(z, "被摧毁", "灾厄效果");
+        this.log(`城池【${z.card.name}】被摧毁！`);
+        st.discard.push(z);
+        st.zone = null;
+        this.refreshDaimyoHp(z.owner);
+      }
+    } else if (l4.includes("摧毁事件")) {
+      const z = st.zone;
+      if (z && z.type === "process") {
+        this.zHist(z, "被摧毁", "灾厄效果");
+        this.log(`事件【${z.card.name}】被摧毁！`);
+        this.settleEvent(z); // 事件结束 → 第五层清算（X/Y）
+        st.discard.push(z);
+        st.zone = null;
+      }
+    } else if (l4.includes("骑具")) {
+      let n = 0;
+      for (const q of st.players) for (const u of q.field) if (u.eq.mount) {
+        const mc = u.eq.mount;
+        u.eq.mount = null;
+        this.mountLeaves(st.players.indexOf(q), mc); // 八百里分麾下炙：骑具下场联动
+        n++;
+      }
+      this.log(`摧毁双方骑具 ${n} 件`);
+    } else if (l4.includes("兵刃") && l4.includes("装具")) {
+      let n = 0;
+      for (const q of st.players) for (const u of q.field) if (u.eq.blade || u.eq.armor) {
+        if (u.eq.blade) { st.discard.push({ type: "blade", card: u.eq.blade }); u.eq.blade = null; }
+        if (u.eq.armor) { st.discard.push({ type: "armor", card: u.eq.armor }); u.eq.armor = null; }
+        n++;
+      }
+      this.log(`摧毁双方兵刃与装具 ${n} 件`);
+    } else if (l4.includes("减半")) {
+      // 臣民叛乱：对方三类型俱全 → 对方生命减半，己方受其损失值一半的直接伤害
+      if (oppAll) {
+        const loss = Math.floor(opp.hp / 2);
+        opp.hp -= loss;
+        this.hpEvent(1 - pi, loss, "天罚·臣民叛乱", opp.hp);
+        this.log(`【${c.card.name}】臣民叛乱：对方将军生命减半（−${loss}）→ ${opp.hp}`);
+        if (opp.hp <= 0) { this.win(pi); return; }
+        const back = Math.floor(loss / 2);
+        if (back > 0) {
+          if (Math.random() * 100 > this.effDodge(pi)) {
+            p.hp -= back;
+            this.hpEvent(pi, back, "天罚·臣民叛乱", p.hp);
+            this.log(`【${c.card.name}】己方将军 −${back}（对方损失值一半）→ ${p.hp}`);
+            if (p.hp <= 0) { this.win(1 - pi); return; }
+          } else this.log(`【${c.card.name}】己方将军躲避成功（${this.effDodge(pi)}%）`);
+        }
+      } else this.log(`臣民叛乱条件不足：需对方战场区武士/公卿/大名俱全`);
+    } else if (l4.includes("更换天皇牌") && l4.includes("将军牌")) {
+      // 永夜笼罩：双方三类型俱全 → 双方更换天皇牌与将军牌（生命不变）
+      const both = st.players.every(q => ["samurai", "noble", "daimyo"].every(k => q.field.some(u => u.kind === k)));
+      if (both) {
+        this.swapShoguns();
+        for (const q of st.players) this.swapEmperor(st.players.indexOf(q));
+        this.log(`【${c.card.name}】永夜笼罩：双方更换天皇牌与将军牌`);
+      } else this.log(`永夜笼罩条件不足：需双方武士/公卿/大名俱全`);
+    }
+  },
+
+  simpleEventEffect(pi, c) {
+    const st = this.state;
+    const p = this.state.players[pi];
+    if (c.type === "calamity") { this.calamityLayers(pi, c); return; }
     const fx = c.card.fx || c.card.l4 || "";
     if (fx.includes("恢复") || fx.includes("生命值的一半") || fx.includes("已失去生命")) {
       const heal = Math.floor(((p.maxHp || 100) - p.hp) / 2);
@@ -1515,27 +1867,6 @@ const Game = {
       this.log(`弃牌堆全部洗回卡组（${this.state.deck.length} 张）`);
     } else if (fx.includes("负面") || fx.includes("负面影响")) {
       this.log(`清除${p.name}将军与天皇的负面影响`);
-    } else if (c.type === "calamity" && fx.includes("摧毁城池")) {
-      if (this.state.zone && this.state.zone.type === "castle") { this.zHist(this.state.zone, "被摧毁", "灾厄效果"); this.log(`城池【${this.state.zone.card.name}】被摧毁！`); this.state.discard.push(this.state.zone); this.state.zone = null; }
-    } else if (c.type === "calamity" && fx.includes("摧毁事件")) {
-      if (this.state.zone && this.state.zone.type === "process") { this.zHist(this.state.zone, "被摧毁", "灾厄效果"); this.log(`事件【${this.state.zone.card.name}】被摧毁！`); this.state.discard.push(this.state.zone); this.state.zone = null; }
-    } else if (c.type === "calamity" && fx.includes("骑具")) {
-      let n = 0;
-      for (const q of this.state.players) for (const u of q.field) if (u.eq.mount) {
-        const mc = u.eq.mount;
-        u.eq.mount = null;
-        this.mountLeaves(this.state.players.indexOf(q), mc); // 八百里分麾下炙：骑具下场联动
-        n++;
-      }
-      this.log(`摧毁双方骑具 ${n} 件`);
-    } else if (c.type === "calamity" && fx.includes("兵刃") && fx.includes("装具")) {
-      let n = 0;
-      for (const q of this.state.players) for (const u of q.field) if (u.eq.blade || u.eq.armor) { u.eq.blade = null; u.eq.armor = null; n++; }
-      this.log(`摧毁双方兵刃与装具 ${n} 件`);
-    } else if (c.type === "calamity" && fx.includes("减半")) {
-      opp.hp = Math.floor(opp.hp / 2);
-      this.log(`【${c.card.name}】对方将军生命减半 → ${opp.hp}`);
-      if (opp.hp <= 0) this.win(pi);
     } else if (fx.includes("献祭一位武士") && fx.includes("大名")) {
       // 圣-04 大国主神：献祭武士 → 弃牌堆召唤大名
       const sacIdx = p.field.findIndex(u => u.kind === "samurai");
@@ -1547,7 +1878,7 @@ const Game = {
         const d = st.discard.splice(pool, 1)[0];
         const u = this.newUnit(pi, "daimyo", d.card);
         p.field.push(u);
-        this.castleL4OnUnitEnter(pi, u);
+        this.onUnitEntered(pi, u);
         this.log(`⚡ 神迹【${c.card.name}】：献祭武士【${sac.card.name}】，从弃牌堆复活大名【${u.card.name}】`);
         if (UI.unitEnter) UI.unitEnter(u.uid);
       } else this.log(`神迹【${c.card.name}】条件不足（需场上有武士且弃牌堆有大名）`);
@@ -1562,7 +1893,7 @@ const Game = {
         const d = st.discard.splice(pool, 1)[0];
         const u = this.newUnit(pi, "noble", d.card);
         p.field.push(u);
-        this.castleL4OnUnitEnter(pi, u);
+        this.onUnitEntered(pi, u);
         this.log(`⚡ 神迹【${c.card.name}】：献祭武士【${sac.card.name}】，从弃牌堆复活公卿【${u.card.name}】`);
         if (UI.unitEnter) UI.unitEnter(u.uid);
       } else this.log(`神迹【${c.card.name}】条件不足（需场上有武士且弃牌堆有公卿）`);
@@ -1592,11 +1923,9 @@ const Game = {
           this.log(`🐉 神迹【${c.card.name}】：${p.name} 的下一个己方回合，【${d.card.name}】将直击对方将军！`);
         } else this.log(`🐉 神迹【${c.card.name}】：己方无大名，无法生效`);
       }
-    } else if (fx.includes("更换天皇牌") && fx.includes("将军牌")) {
-      // 灾-05 王座更迭：双方三类型俱全 → 双方换将军牌
-      const both = st.players.every(q => ["samurai", "noble", "daimyo"].every(k => q.field.some(u => u.kind === k)));
-      if (both) { this.swapShoguns(); }
-      else this.log(`王座更迭条件不足：需双方武士/公卿/大名俱全`);
+    } else if (fx.includes("更换天皇牌或将军牌")) {
+      // 圣-09 八咫乌引路：双方各选「更换天皇 / 更换将军 / 放弃」
+      this.yatagarasuFlow(pi);
     } else if (fx.includes("更换天皇牌") || fx.includes("更换天皇")) {
       // 圣-06 天孙降临：双方各换天皇
       for (const q of st.players) this.swapEmperor(st.players.indexOf(q));
@@ -1607,10 +1936,6 @@ const Game = {
         this.eHist(st.players.indexOf(q), "神木报应", "天皇效果失效 3 回合");
       }
       this.log(`🌲 神迹【${c.card.name}】：双方天皇接下来 3 个回合失去效果`);
-    } else if (fx.includes("更换天皇牌或将军牌")) {
-      // 圣-09 八咫乌：简化——双方各随机换天皇
-      for (const q of st.players) this.swapEmperor(st.players.indexOf(q));
-      this.log(`八咫乌引路：双方各自更换天皇牌`);
     } else {
       this.log(`（${c.card.name}效果未完整实现，见规则书）`);
     }
@@ -1818,6 +2143,8 @@ const Game = {
     const td = this.unitDodge(t);
     if (td > 0 && Math.random() * 100 <= td) {
       this.log(`【${t.card.name}】骑具躲避成功（${td}%）！攻击无效`);
+      this.mountDodgeReward(1 - pi); // 王城：己方骑具躲避成功 → 敌方武士攻击 +1
+      this.growEquip(t, "armor"); // 装具成长：完成防御结算（含躲避成功）
       this.afterAttack(p, u, t);
       return true;
     }
@@ -1830,7 +2157,7 @@ const Game = {
         const bc = t.eq.blade;
         st.discard.push({ type: "blade", card: bc });
         t.eq.blade = null;
-        t.hp = Math.min(20, t.hp + 5);
+        t.hp = Math.min(this.daimyoHpCap(t), t.hp + 5);
         t.hist = t.hist || [];
         t.hist.push({ t: st.turnNo, src: "器魂之灭", desc: `兵刃【${bc.name}】自动下场，大名命值 +5 → ${t.hp}` });
         this.log(`🗡 器魂之灭：兵刃【${bc.name}】自动下场，大名【${t.card.name}】命值 +5 → ${t.hp}`);
@@ -1865,6 +2192,7 @@ const Game = {
         t.hist.push({ t: this.state.turnNo, src: "受击", desc: `被【${u.card.name}】攻${s.atk} 命中，命值 ${t.hp + dmg}→${t.hp}` });
         this.log(`【${u.card.name}】（攻${s.atk}）命中大名【${t.card.name}】命值 ${t.hp + dmg}→${t.hp}`);
         if (UI.floatDamage) UI.floatDamage(t.uid, dmg);
+        this.growEquip(t, "armor"); // 装具成长：完成防御结算
       }
     } else if (t.kind === "samurai") {
       const remain = ts.def - dmg;
@@ -1900,8 +2228,14 @@ const Game = {
         t.hist.push({ t: this.state.turnNo, src: "受击", desc: `被【${u.card.name}】攻${s.atk} 命中，防 ${ts.def}→${remain}` });
         this.log(`【${u.card.name}】（攻${s.atk}）命中武士【${t.card.name}】防 ${ts.def}→${remain}`);
         if (UI.floatDamage) UI.floatDamage(t.uid, dmg);
-        // 坚守：被攻击未击破 → 防+1
-        if (t.fx.includes("坚守")) { t.baseDef += 1; t.hist.push({ t: this.state.turnNo, src: "坚守", desc: "被攻击未击破，防御 +1" }); this.log(`【${t.card.name}】坚守 +1 防御`); }
+        // 坚守：被攻击未击破 → 防+1（增幅归零后三层特效失效）
+        if (!t.purged && t.fx.includes("坚守")) {
+          t.baseDef += 1;
+          t.guardBonus = (t.guardBonus || 0) + 1; // 记录坚守累积，供增幅归零时回退
+          t.hist.push({ t: this.state.turnNo, src: "坚守", desc: "被攻击未击破，防御 +1" });
+          this.log(`【${t.card.name}】坚守 +1 防御`);
+        }
+        this.growEquip(t, "armor"); // 装具成长：完成防御结算
       }
     } else if (t.kind === "noble") {
       const remain = ts.atk - dmg;
@@ -1937,6 +2271,7 @@ const Game = {
         t.hist.push({ t: this.state.turnNo, src: "受击", desc: `被【${u.card.name}】攻${s.atk} 命中，攻 ${ts.atk}→${remain}` });
         this.log(`【${u.card.name}】（攻${s.atk}）命中公卿【${t.card.name}】攻 ${ts.atk}→${remain}`);
         if (UI.floatDamage) UI.floatDamage(t.uid, dmg);
+        this.growEquip(t, "armor"); // 装具成长：完成防御结算
       }
     }
     this.afterAttack(p, u, t);
@@ -2265,14 +2600,14 @@ const Game = {
       this.log(`🏰 公卿【${noble.card.name}】城池加成：${desc}`);
     };
     if (info.kind === 1) {
-      const i = defP.field.indexOf(noble);
-      if (i >= 0) defP.field.splice(i, 1);
+      // 弃置该公卿替大名受死：走正规离场流程（入弃牌堆、装备随弃、触发城池第四层兴衰）
+      this.removeUnit(noble);
       sacLog(info.desc);
       return true;
     }
     if (info.kind === 2) {
-      const i = defP.field.indexOf(info.w);
-      if (i >= 0) defP.field.splice(i, 1);
+      // 弃置己方一位武士替公卿受死：走正规离场流程
+      this.removeUnit(info.w);
       sacLog(info.desc);
       return true;
     }
@@ -2289,8 +2624,18 @@ const Game = {
       const slot = t.eq.blade ? "blade" : t.eq.armor ? "armor" : "mount";
       st.discard.push({ type: slot, card: t.eq[slot] });
       t.eq[slot] = null;
+      // 减半：攻防与累积特效数值一并折半（向上取整、至少 1；三层特效的 +1 依规则书保持不变）
+      const beforeAtk = t.baseAtk, beforeDef = t.baseDef;
       t.baseAtk = Math.max(1, Math.ceil(t.baseAtk / 2));
       t.baseDef = Math.max(1, Math.ceil(t.baseDef / 2));
+      t.extraAtk = Math.ceil((t.extraAtk || 0) / 2);
+      t.extraDef = Math.ceil((t.extraDef || 0) / 2);
+      // 记录减半损失：增幅归零（御·庇护）时需一并回收（可多次减半 → 累加）
+      const prev = t.halveLoss || { atk: 0, def: 0 };
+      t.halveLoss = {
+        atk: prev.atk + (beforeAtk - t.baseAtk),
+        def: prev.def + (beforeDef - t.baseDef),
+      };
       t.hist = t.hist || [];
       t.hist.push({ t: st.turnNo, src: "公卿城池加成", desc: "装备替死存活，攻防减半" });
       sacLog(info.desc);
@@ -2325,50 +2670,6 @@ const Game = {
     return useIt();
   },
 
-  /* 城池两种增幅（每张每局仅一次）：放置时一次性结算 */
-  castleAmpOnce(pi, c) {
-    const st = this.state;
-    const p = st.players[pi];
-    const KM = { 大名: "daimyo", 公卿: "noble", 武士: "samurai" };
-    const m1 = (c.card.amp1 || "").match(/(将军生命|大名|公卿|武士)\s*\+?(\d+)/);
-    if (m1) {
-      const N = parseInt(m1[2]);
-      if (m1[1] === "将军生命") {
-        p.hp = Math.min(p.maxHp || 100, p.hp + N);
-        this.hpEvent(pi, -N, "城池增幅", p.hp);
-        this.log(`🏯 城池【${c.card.name}】增幅一（每局一次）：将军生命 +${N} → ${p.hp}`);
-      } else {
-        const kind = KM[m1[1]];
-        let n = 0;
-        for (const u of p.field) if (u.kind === kind) {
-          u.baseAtk += N; u.baseDef += N;
-          u.hist = u.hist || [];
-          u.hist.push({ t: st.turnNo, src: "城池增幅一", desc: `每局一次：${m1[1]}攻防 +${N}` });
-          n++;
-        }
-        this.log(`🏯 城池【${c.card.name}】增幅一（每局一次）：己方${m1[1]} ${n} 张攻防各 +${N}`);
-      }
-    }
-    const m2 = (c.card.amp2 || "").match(/(兵刃|装具)\s*\+?(\d+)/);
-    if (m2) {
-      const N = parseInt(m2[2]);
-      if (m2[1] === "兵刃") {
-        for (const u of p.field) if (u.eq.blade) {
-          u.baseAtk += N;
-          u.hist = u.hist || [];
-          u.hist.push({ t: st.turnNo, src: "城池增幅二", desc: `每局一次：兵刃攻击 +${N}` });
-        }
-      } else {
-        for (const u of p.field) if (u.eq.armor) {
-          u.baseDef += N;
-          u.hist = u.hist || [];
-          u.hist.push({ t: st.turnNo, src: "城池增幅二", desc: `每局一次：装具防御 +${N}` });
-        }
-      }
-      this.log(`🏯 城池【${c.card.name}】增幅二（每局一次）：己方${m2[1]}数值 +${N}`);
-    }
-  },
-
   /* 城池第四层 · 兴衰损益：己方大名/公卿下场 → 对方将军 −a/−b */
   castleL4OnUnitGone(u) {
     const st = this.state;
@@ -2386,6 +2687,12 @@ const Game = {
     if (opp.hp <= 0) this.win(u.pi);
   },
   /* 城池第四层 · 兴衰损益：对方公卿/大名上场 → 己方将军 +c/+d */
+  /* 单位进入战场区的统一挂钩：城池第四层（兴衰损益）+ 大名第四层·天命 */
+  onUnitEntered(pi, u) {
+    this.castleL4OnUnitEnter(pi, u);
+    this.checkTianming(pi);
+  },
+
   castleL4OnUnitEnter(pi, u) {
     const st = this.state;
     const z = st.zone;
@@ -2434,8 +2741,10 @@ const Game = {
   afterAttack(p, u, target) {
     const st = this.state;
     const pi = st.players.indexOf(p);
-    // 战意：攻击后攻击+1
-    if (u.fx.includes("战意")) {
+    // 兵刃成长：攻击结算完成后掷骰
+    this.growEquip(u, "blade");
+    // 战意：攻击后攻击+1（增幅归零后三层特效失效）
+    if (!u.purged && u.fx.includes("战意")) {
       u.extraAtk = (u.extraAtk || 0) + 1;
       u.hist = u.hist || [];
       u.hist.push({ t: st.turnNo, src: "战意", desc: "攻击后攻击 +1" });
