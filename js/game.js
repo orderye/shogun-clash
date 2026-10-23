@@ -20,8 +20,22 @@ const Game = {
 
   /* ---------- 对局存档（刷新恢复现场，不重新开局） ---------- */
   SAVE_KEY: "shogunClash.save",
+  _saveTimer: null,
+  _savePending: false,
+  /* 存档写入节流：渲染频繁（每次 renderAll 都调 save），同步 localStorage 写入会阻塞主线程。
+     改为「节流 + 兜底」：400ms 内的多次 save 合并为一次写入，页面隐藏/卸载时立即落盘。 */
   save() {
     if (typeof localStorage === "undefined") return;
+    if (this._savePending) return;
+    this._savePending = true;
+    const flush = () => {
+      this._saveTimer = null;
+      this._savePending = false;
+      this._saveNow();
+    };
+    this._saveTimer = setTimeout(flush, 400);
+  },
+  _saveNow() {
     try {
       // transient 条目（如「已从存档恢复现场」）只在本次会话显示，不写入存档，
       // 否则每次刷新都会往战报里再叠一条同类记录
@@ -3791,6 +3805,7 @@ const Game = {
     st.winner = pi;
     this.clearChoices();
     this.save();
+    this._saveNow(); // 胜负已定，立即落盘（不等节流窗口，避免刷新后恢复为未结束状态）
     this.log(`🏆 ${st.players[pi].name} 获胜！`, pi === 0 ? "me" : "ai");
     UI.showModal("对战结束", `<div style="font-size:22px;text-align:center;color:#ffd700">${st.players[pi].name} 获胜！</div>
       <p style="text-align:center;margin:10px 0">点击下方重新开局</p>`,
@@ -3803,6 +3818,7 @@ const Game = {
     st.winner = -1; // -1 = 和局
     this.clearChoices();
     this.save();
+    this._saveNow(); // 和局已定，立即落盘
     this.log(`🀄 和局：${reason}`);
     UI.showModal("对战结束", `<div style="font-size:22px;text-align:center;color:#ffd98a">和 局</div>
       <p style="text-align:center;margin:10px 0">${reason}</p>`,

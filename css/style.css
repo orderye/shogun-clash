@@ -94,16 +94,25 @@ button.small { font-size: 12px; padding: 4px 9px; }
 .pa-head { display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap;
   flex: 1 1 auto; min-height: 0; }
 
-/* 化身卡（天皇/将军） */
+/* 化身卡（天皇/将军）：纵向 flex，内容不被裁切 */
 .avatar-card { width: 118px; flex: 0 0 auto; background: linear-gradient(160deg,#3a2f1e,#241d12);
   border: 1px solid var(--gold);
   border-radius: var(--r-md); padding: 6px; text-align: center; position: relative;
-  max-height: 100%; overflow: hidden; }
-.avatar-card .role { font-size: 11px; color: var(--gold); letter-spacing: 2px; }
-.avatar-card .nm { font-size: 14px; font-weight: 700; margin: 1px 0; }
-.avatar-card .info { font-size: 10px; color: var(--text-2); line-height: 1.28; }
+  display: flex; flex-direction: column;
+  /* 内容完整高度：role+nm+info(最多5行)+宝物chips+血条+血条文字；低于此高度时整卡不被压扁 */
+  min-height: 168px; }
+.avatar-card .role { font-size: 11px; color: var(--gold); letter-spacing: 2px; flex: 0 0 auto; }
+.avatar-card .nm { font-size: 14px; font-weight: 700; margin: 1px 0; flex: 0 0 auto; }
+.avatar-card .info { font-size: 10px; color: var(--text-2); line-height: 1.28; flex: 0 1 auto; min-width: 0; }
 /* 将军卡信息分三行：技能 / 躲避 / 天赋·本性·尊位（窄屏可隐藏末行） */
 .avatar-card .info .dg-line, .avatar-card .info .tg-line, .avatar-card .info .nk-line { display: block; }
+/* 宝物 chips / hp-bar：固定显示不收缩 */
+.avatar-card .u-eq { flex: 0 0 auto; font-size: 10px; color: #ffd98a; min-height: 12px; margin-top: 2px;
+  overflow-wrap: anywhere; }
+.avatar-card .hp-bar { height: 10px; background: #3a2a22; border-radius: 5px; overflow: hidden; margin: 3px 0; border: 1px solid #5a4530; flex: 0 0 auto; }
+.avatar-card .hp-bar .fill { height: 100%; background: linear-gradient(90deg,#d9534f,#b03a2e); transition: width .3s; }
+.avatar-card .hp-text { font-size: 12px; font-weight: 700; color: #ffd9a8; flex: 0 0 auto; }
+/* 通用 hp-bar（战场区大名命值条等） */
 .hp-bar { height: 10px; background: #3a2a22; border-radius: 5px; overflow: hidden; margin: 3px 0; border: 1px solid #5a4530; }
 .hp-bar .fill { height: 100%; background: linear-gradient(90deg,#d9534f,#b03a2e); transition: width .3s; }
 .hp-text { font-size: 12px; font-weight: 700; color: #ffd9a8; }
@@ -685,8 +694,7 @@ button.small { font-size: 12px; padding: 4px 9px; }
     grid-template-rows: auto minmax(0, 1fr);
     gap: 6px;
     overflow: hidden; /* 战场区放不下时裁切，不压到手牌上 */
-  }
-  .pa-head > .avatar-card:nth-child(1) { grid-row: 1; grid-column: 1; width: auto; }
+  }  .pa-head > .avatar-card:nth-child(1) { grid-row: 1; grid-column: 1; width: auto; }
   .pa-head > .avatar-card:nth-child(2) { grid-row: 1; grid-column: 2; width: auto; }
   .pa-head > .battlefield { grid-row: 2; grid-column: 1 / -1; }
 
@@ -737,8 +745,8 @@ button.small { font-size: 12px; padding: 4px 9px; }
   .loading-verse { font-size: 16px; }
   .codex-frame { width: 96%; height: 92vh; }
   .codex-head { flex-wrap: wrap; gap: 6px; }
-  .codex-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
-  .codex-card { font-size: 10px; }
+  .codex-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+  .codex-card { flex: 0 1 calc(50% - 6px); min-width: 0; font-size: 10px; }
 
   /* 抽选屏 */
   .draft-frame { width: 96%; padding: 14px 10px 12px; }

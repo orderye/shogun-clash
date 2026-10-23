@@ -678,6 +678,7 @@ const UI = {
     } else {
       zs.innerHTML = `<span style="color:#7a6a4a">（空）</span>`;
       zs.className = "zone-slot";
+      zs.onclick = null; // 清空回调，避免点击空槽时打开已失效的常置牌详情
     }
     this.renderLog();
   },
@@ -1656,7 +1657,7 @@ const UI = {
     const btns = this.el("modalButtons");
     btns.innerHTML = "";
     for (const o of buttons) {
-      btns.appendChild(mk(o.label, o.fn, false, "modal-opt" + (o.cls ? " " + o.cls : "")));
+      btns.appendChild(mk(o.label, o.fn, !!o.disabled, "modal-opt" + (o.cls ? " " + o.cls : "")));
     }
     this.el("modal").classList.remove("hidden");
   },
@@ -2131,6 +2132,9 @@ const UI = {
     });
     const cb = this.el("codexBtn");
     if (cb) cb.addEventListener("click", () => UI.showCodex());
+    // 页面隐藏/卸载时立即落盘存档（避免节流窗口内的最后一次状态丢失）
+    window.addEventListener("pagehide", () => Game._saveNow());
+    document.addEventListener("visibilitychange", () => { if (document.hidden) Game._saveNow(); });
     // 自动进入 AI 回合
     setInterval(() => {
       const st = Game.state;
