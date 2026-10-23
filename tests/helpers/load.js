@@ -42,6 +42,7 @@ const DEFAULT_ANSWERS = {
   askRankBlock: false,
   askNegate: null,
   askYatagarasu: null,
+  askOpeningRedraw: false,
 };
 
 const ASK_METHODS = Object.keys(DEFAULT_ANSWERS);
@@ -66,6 +67,20 @@ function makeUIStub(answers, calls) {
     guoshiEffect: () => {},
     showModal: () => {},
     hideModal: () => {},
+    // 单位抉择弹窗：默认取首个候选（无候选则回调 null），使流程在 Node 中可同步跑完。
+    // 用例可通过 answers.askPickUnit = (job) => ({ uid, mode }) 精确指定选择；
+    // 返回 null/undefined 表示「不选」（回调 uid=null）。
+    askPickUnit: (job, cb) => {
+      calls.push({ method: "askPickUnit", args: [job, cb] });
+      let pick;
+      if (typeof answers.askPickUnit === "function") pick = answers.askPickUnit(job);
+      if (pick === undefined) {
+        const first = job && job.cands && job.cands[0];
+        const mode = job && job.modes && job.modes[0] ? job.modes[0].key : null;
+        pick = first ? { uid: first.uid, mode } : null;
+      }
+      if (typeof cb === "function") cb(pick ? pick.uid : null, pick ? pick.mode : null);
+    },
   };
   for (const name of ASK_METHODS) {
     stub[name] = (...args) => {
@@ -132,6 +147,7 @@ export function loadGame(opts = {}) {
   };
   // 挂到测试实例上，便于 fixture 只凭 Game 查卡牌（生产代码不受影响）
   Game.__card = card;
+  Game.__UI = sandbox.UI; // 用例可按需覆写某个弹窗（例如精确指定 askPickUnit 的选择）
 
   return { Game, CARDS, calls, random, card };
 }

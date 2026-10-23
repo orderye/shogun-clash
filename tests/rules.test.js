@@ -141,23 +141,46 @@ describe("攻击限制", () => {
 });
 
 describe("伤害结算", () => {
-  it("武士按防御承伤：防御归零即下场，溢出伤害给防守方将军", () => {
+  it("武士以自身攻击值抵消伤害，防御值兼作生命", () => {
     const { Game, p1 } = readyBoard();
     const attacker = placeUnit(Game, 0, "samurai", "武-03"); // 攻 4 + 武士之锋2 = 6
-    const victim = placeUnit(Game, 1, "samurai", "武-01"); // 防 4 + 防御光环1 = 5
+    const victim = placeUnit(Game, 1, "samurai", "武-02"); // 战意/持刃，无坚守
+    const atkS = Game.unitStats(attacker).atk;
+    const ts = Game.unitStats(victim);
+    const dmg = atkS - ts.atk;
+    expect(dmg).toBeGreaterThan(0);
     const hpBefore = p1.hp;
+
     Game.attack(0, attacker.uid, victim.uid);
+
+    expect(p1.field).toContain(victim);
+    expect(Game.unitStats(victim).def).toBe(ts.def - dmg);
+    expect(p1.hp).toBe(hpBefore); // 未击破，无溢出
+  });
+
+  it("武士防御归零即下场，溢出伤害给防守方将军", () => {
+    const { Game, p1 } = readyBoard();
+    const attacker = placeUnit(Game, 0, "samurai", "武-03");
+    equip(Game, 0, "blade", "刃-01", attacker); // 攻 +3 → 9
+    const victim = placeUnit(Game, 1, "samurai", "武-01", { baseDef: 1 }); // 防 1 + 光环1 = 2
+    const atkS = Game.unitStats(attacker).atk;
+    const ts = Game.unitStats(victim);
+    const dmg = atkS - ts.atk; // 9 − 4 = 5 > 防 2
+    const hpBefore = p1.hp;
+
+    Game.attack(0, attacker.uid, victim.uid);
+
     // 下场：移出战场并进入弃牌堆
     expect(p1.field).not.toContain(victim);
     expect(Game.state.discard.some((c) => c.card.id === "武-01")).toBe(true);
-    // 溢出 = 攻击6 − 防御5 = 1，作用于防守方将军
-    expect(p1.hp).toBe(hpBefore - 1);
+    // 溢出 = 伤害5 − 防御2 = 3，作用于防守方将军
+    expect(p1.hp).toBe(hpBefore - (dmg - ts.def));
   });
 
   it("防御足够时只削减防御，不产生溢出伤害", () => {
     const { Game, p1 } = readyBoard();
     const attacker = placeUnit(Game, 0, "samurai", "武-01"); // 攻 3 + 2 = 5
-    const victim = placeUnit(Game, 1, "samurai", "武-01"); // 防 4 + 光环1 = 5
+    const victim = placeUnit(Game, 1, "samurai", "武-01"); // 攻 4 / 防 5
     equip(Game, 1, "armor", "装-01", victim); // 装具 防+3 → 防御 8
     const hpBefore = p1.hp;
     Game.attack(0, attacker.uid, victim.uid);
@@ -165,36 +188,135 @@ describe("伤害结算", () => {
     expect(p1.hp).toBe(hpBefore);
   });
 
-  it("公卿按攻击承伤（规则书 8.2）", () => {
+  it("公卿以防御值抵消伤害，攻击值兼作生命", () => {
     const { Game, p1 } = readyBoard();
-    const attacker = placeUnit(Game, 0, "samurai", "武-01"); // 攻 5
-    const noble = placeUnit(Game, 1, "noble", "卿-01"); // 攻 2 + ①全场攻击1 = 3
+    const attacker = placeUnit(Game, 0, "samurai", "武-03"); // 攻 6
+    const noble = placeUnit(Game, 1, "noble", "卿-01"); // 攻 2+①1 = 3；防 4 + 防御光环1 = 5
+    const atkS = Game.unitStats(attacker).atk;
+    const ts = Game.unitStats(noble);
+    const dmg = atkS - ts.def; // 6 − 5 = 1
     const hpBefore = p1.hp;
+
     Game.attack(0, attacker.uid, noble.uid);
-    expect(p1.field).not.toContain(noble);
-    // 溢出 = 攻击5 − 公卿攻击3 = 2
-    expect(p1.hp).toBe(hpBefore - 2);
+
+    expect(p1.field).toContain(noble);
+    expect(Game.unitStats(noble).atk).toBe(ts.atk - dmg); // 3 − 1 = 2
+    expect(p1.hp).toBe(hpBefore);
   });
 
-  it("大名以命值承伤，20 点命值耗尽才下场", () => {
+  it("公卿攻击归零即下场，溢出伤害给防守方将军", () => {
     const { Game, p1 } = readyBoard();
-    const attacker = placeUnit(Game, 0, "samurai", "武-01"); // 攻 5
-    const daimyo = placeUnit(Game, 1, "daimyo", "大-01"); // 命值 20
+    const attacker = placeUnit(Game, 0, "samurai", "武-03");
+    equip(Game, 0, "blade", "刃-01", attacker); // 攻 +3 → 9
+    const noble = placeUnit(Game, 1, "noble", "卿-01", { baseAtk: 1 }); // 攻 1+①1 = 2；防 5
+    const atkS = Game.unitStats(attacker).atk;
+    const ts = Game.unitStats(noble);
+    const dmg = atkS - ts.def; // 9 − 5 = 4 > 攻 2
     const hpBefore = p1.hp;
+
+    Game.attack(0, attacker.uid, noble.uid);
+
+    expect(p1.field).not.toContain(noble);
+    expect(p1.hp).toBe(hpBefore - (dmg - ts.atk)); // 溢出 2
+  });
+
+  it("大名以防御值抵消伤害，命值耗尽才下场", () => {
+    const { Game, p1 } = readyBoard();
+    const attacker = placeUnit(Game, 0, "samurai", "武-03");
+    equip(Game, 0, "blade", "刃-01", attacker); // 攻 +3 → 9
+    const daimyo = placeUnit(Game, 1, "daimyo", "大-01"); // 防 5 + 光环1 = 6，命值 20
+    const ts = Game.unitStats(daimyo);
+    const dmg = Game.unitStats(attacker).atk - ts.def; // 9 − 6 = 3
+    const hpBefore = p1.hp;
+
     Game.attack(0, attacker.uid, daimyo.uid);
+
     expect(p1.field).toContain(daimyo);
-    expect(daimyo.hp).toBe(15);
+    expect(daimyo.hp).toBe(20 - dmg);
     expect(p1.hp).toBe(hpBefore); // 无溢出
   });
 
   it("大名命值不足时按差额溢出", () => {
     const { Game, p1 } = readyBoard();
-    const attacker = placeUnit(Game, 0, "samurai", "武-01"); // 攻 5
-    const daimyo = placeUnit(Game, 1, "daimyo", "大-01", { hp: 3 });
+    const attacker = placeUnit(Game, 0, "samurai", "武-03");
+    equip(Game, 0, "blade", "刃-01", attacker); // 攻 +3 → 9
+    const daimyo = placeUnit(Game, 1, "daimyo", "大-01", { hp: 2 }); // 防 6，命值 2
+    const ts = Game.unitStats(daimyo);
+    const dmg = Game.unitStats(attacker).atk - ts.def; // 9 − 6 = 3
     const hpBefore = p1.hp;
+
     Game.attack(0, attacker.uid, daimyo.uid);
+
     expect(p1.field).not.toContain(daimyo);
-    expect(p1.hp).toBe(hpBefore - 2); // 溢出 5 − 3 = 2
+    expect(p1.hp).toBe(hpBefore - (dmg - 2)); // 溢出 1
+  });
+});
+
+describe("大名 · 防御护盾与穿透", () => {
+  it("攻击不足以穿透时只削减防御，命值不变", () => {
+    const { Game } = readyBoard();
+    const attacker = placeUnit(Game, 0, "samurai", "武-03"); // 攻 6
+    const d = placeUnit(Game, 1, "daimyo", "大-01");
+    d.baseDef = 7;
+    const defBefore = Game.unitStats(d).def;
+    const hpBefore = d.hp;
+    const atk = Game.unitStats(attacker).atk;
+
+    Game.attack(0, attacker.uid, d.uid);
+
+    expect(d.hp).toBe(hpBefore);
+    expect(Game.unitStats(d).def).toBe(defBefore - atk);
+  });
+
+  it("防御被穿透：扣命值、防御回满、弃置一件装备、锁住非装备增幅", () => {
+    const { Game } = readyBoard();
+    const attacker = placeUnit(Game, 0, "samurai", "武-03");
+    attacker.baseAtk = 9;
+    attacker.extraAtk = 0;
+    const d = placeUnit(Game, 1, "daimyo", "大-01");
+    d.baseAtk = 3; d.baseDef = 7; d.extraAtk = 0; d.extraDef = 0;
+    equip(Game, 1, "armor", "装-01", d);
+    equip(Game, 1, "blade", "刃-01", d);
+    d.penetrated = false;
+
+    const defBefore = Game.unitStats(d).def; // 7 + 装具3 + 光环1 = 11
+    const atk = Game.unitStats(attacker).atk; // 9
+    expect(defBefore).toBeGreaterThan(0);
+    // 先把护盾削到低于攻击值
+    d.defLoss = defBefore - 2;
+
+    Game.attack(0, attacker.uid, d.uid);
+
+    // 溢出 = 9 − 2 = 7
+    expect(d.hp).toBe(20 - (atk - 2));
+    expect(d.penetrated).toBe(true);
+    expect(d.defLoss).toBe(0); // 防御回满
+    // 穿透弃置一件装备（装具优先）
+    expect(d.eq.armor).toBe(null);
+    expect(Game.state.discard.some((c) => c.card.id === "装-01")).toBe(true);
+    // 穿透后总防御不再含光环，只剩基础值 + 剩余装备
+    const s = Game.unitStats(d);
+    expect(s.def).toBeLessThan(defBefore);
+  });
+
+  it("命值跌入下一阶段（替死→本命）：装备清零、增幅恢复", () => {
+    const { Game } = readyBoard();
+    const attacker = placeUnit(Game, 0, "samurai", "武-03");
+    attacker.baseAtk = 9;
+    attacker.extraAtk = 0;
+    const d = placeUnit(Game, 1, "daimyo", "大-01");
+    d.baseAtk = 3; d.baseDef = 7; d.extraAtk = 0; d.extraDef = 0;
+    equip(Game, 1, "armor", "装-01", d);
+    equip(Game, 1, "blade", "刃-01", d);
+    d.hp = 11;           // 替死阶段末
+    d.defLoss = Game.unitStats(d).def - 2; // 即将被穿透
+
+    Game.attack(0, attacker.uid, d.uid);
+
+    expect(d.hp).toBeLessThan(10);        // 已进入本命
+    expect(d.penetrated).toBe(false);     // 新阶段增幅恢复
+    expect(d.eq.armor).toBe(null);        // 阶段转换：装备清零
+    expect(d.eq.blade).toBe(null);
   });
 });
 

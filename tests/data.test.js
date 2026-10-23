@@ -7,9 +7,9 @@ const { CARDS } = loadGame();
 const EXPECTED_COUNTS = {
   emperors: 10,
   shoguns: 10,
-  daimyo: 15,
-  samurai: 50,
-  noble: 10,
+  daimyo: 20,
+  samurai: 55,
+  noble: 15,
   process: 10,
   castle: 10,
   treasure: 10,
@@ -24,20 +24,20 @@ const EXPECTED_COUNTS = {
 const UNIT_KINDS_CN = ["大名", "公卿", "武士"];
 
 describe("数据完整性 · 牌数与标识", () => {
-  it("卡牌总数为 190", () => {
-    expect(allCards(CARDS)).toHaveLength(190);
+  it("卡牌总数为 205", () => {
+    expect(allCards(CARDS)).toHaveLength(205);
   });
 
   it.each(Object.entries(EXPECTED_COUNTS))("%s 有 %i 张", (type, n) => {
     expect(CARDS[type]).toHaveLength(n);
   });
 
-  it("共用卡组为 170 张（190 减去 10 天皇 + 10 将军）", () => {
+  it("共用卡组为 185 张（205 减去 10 天皇 + 10 将军）", () => {
     const deckTypes = Object.keys(EXPECTED_COUNTS).filter(
       (t) => t !== "emperors" && t !== "shoguns"
     );
     const deckSize = deckTypes.reduce((sum, t) => sum + CARDS[t].length, 0);
-    expect(deckSize).toBe(170);
+    expect(deckSize).toBe(185);
   });
 
   it("所有卡牌 id 唯一且非空", () => {
@@ -120,6 +120,49 @@ describe("数据完整性 · 规则书对各卡牌类型的约束", () => {
         expect(card.atk).toBeGreaterThan(0);
         expect(card.dfs).toBeGreaterThan(0);
       }
+    }
+  });
+
+  /* 规则书的属性上限（3.3 大名 / 3.4 武士 / 3.5 公卿）——
+     新增卡牌时若越界，这里会直接失败，而不是等到对局里才发现。 */
+
+  it("大名牌：攻 5–10、防 4–7、攻防合计 ≤ 15（规则书 3.3）", () => {
+    for (const card of CARDS.daimyo) {
+      expect(card.atk, `${card.id} 攻击越界`).toBeGreaterThanOrEqual(5);
+      expect(card.atk, `${card.id} 攻击越界`).toBeLessThanOrEqual(10);
+      expect(card.dfs, `${card.id} 防御越界`).toBeGreaterThanOrEqual(4);
+      expect(card.dfs, `${card.id} 防御越界`).toBeLessThanOrEqual(7);
+      expect(card.atk + card.dfs, `${card.id} 攻防合计超上限 15`).toBeLessThanOrEqual(15);
+    }
+  });
+
+  it("武士牌：攻 1–5、防 1–5、攻防合计 ≤ 7（规则书 3.4）", () => {
+    for (const card of CARDS.samurai) {
+      expect(card.atk, `${card.id} 攻击越界`).toBeGreaterThanOrEqual(1);
+      expect(card.atk, `${card.id} 攻击越界`).toBeLessThanOrEqual(5);
+      expect(card.dfs, `${card.id} 防御越界`).toBeGreaterThanOrEqual(1);
+      expect(card.dfs, `${card.id} 防御越界`).toBeLessThanOrEqual(5);
+      expect(card.atk + card.dfs, `${card.id} 攻防合计超上限 7`).toBeLessThanOrEqual(7);
+    }
+  });
+
+  it("公卿牌：攻 1–5、防 1–5、攻防合计 ≤ 10（规则书 3.5）", () => {
+    for (const card of CARDS.noble) {
+      expect(card.atk, `${card.id} 攻击越界`).toBeGreaterThanOrEqual(1);
+      expect(card.atk, `${card.id} 攻击越界`).toBeLessThanOrEqual(5);
+      expect(card.dfs, `${card.id} 防御越界`).toBeGreaterThanOrEqual(1);
+      expect(card.dfs, `${card.id} 防御越界`).toBeLessThanOrEqual(5);
+      expect(card.atk + card.dfs, `${card.id} 攻防合计超上限 10`).toBeLessThanOrEqual(10);
+    }
+  });
+
+  it("公卿牌：城池加成必须是 ①～⑥ 之一（规则书 3.5 六选一）", () => {
+    const VALID = ["①", "②", "③", "④", "⑤", "⑥"];
+    for (const card of CARDS.noble) {
+      expect(card.castle, `${card.id} 缺 castle`).toBeTruthy();
+      const m = card.castle.match(/^([①②③④⑤⑥])/);
+      expect(m, `${card.id} castle 未以圈号开头: ${card.castle}`).toBeTruthy();
+      expect(VALID, `${card.id} castle 圈号非法`).toContain(m[1]);
     }
   });
 

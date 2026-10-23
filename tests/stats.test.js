@@ -101,33 +101,34 @@ describe("攻防计算 · 天皇轨道", () => {
 });
 
 describe("攻防计算 · 常置牌（城池 / 事件）", () => {
-  it("己方王城：城威 攻+3 防+3", () => {
+  // 注：将-01 现拥有「战前大赏 X=1」——己方常置牌在区时武士防御 +1，敌方常置牌在区时武士攻击 +1
+  it("己方王城：城威 攻+3 防+3，另加战前大赏 防+1", () => {
     const { Game } = board();
     placeZone(Game, 0, "castle", "城-01"); // 京都 王城 ao=3 ap=2
     const u = placeUnit(Game, 0, "samurai", "武-01");
     const s = Game.unitStats(u);
     expect(s.atk).toBe(3 + 2 + 3); // 基础3 + 武士之锋2 + 城威3
-    expect(s.def).toBe(4 + 1 + 3); // 基础4 + 防御光环1 + 城威3
+    expect(s.def).toBe(4 + 1 + 3 + 1); // 基础4 + 防御光环1 + 城威3 + 战前大赏1
   });
 
-  it("敌方王城：城威 攻+2 防+2", () => {
+  it("敌方王城：城威 攻+2 防+2，另加战前大赏 攻+1", () => {
     const { Game } = board();
     placeZone(Game, 1, "castle", "城-01");
     const u = placeUnit(Game, 0, "samurai", "武-01");
     const s = Game.unitStats(u);
-    expect(s.atk).toBe(3 + 2 + 2);
+    expect(s.atk).toBe(3 + 2 + 2 + 1); // + 战前大赏1（敌方常置牌 → 攻击）
     expect(s.def).toBe(4 + 1 + 2);
   });
 
-  it("己方事件：第一层 攻防洪流 攻+4 防+4", () => {
+  it("己方事件：第一层 攻防洪流 攻+4 防+4，另加战前大赏 防+1", () => {
     const { Game } = board();
     placeZone(Game, 0, "process", "进-01"); // 承久之乱 a1o=4
     const u = placeUnit(Game, 0, "samurai", "武-01");
     const s = Game.unitStats(u);
     // 攻 3 + 武士之锋2 + 事件第一层4 = 9
     expect(s.atk).toBe(9);
-    // 防 4 + 防御光环1 + 事件第一层4 + 事件立场·己防1 = 10
-    expect(s.def).toBe(10);
+    // 防 4 + 防御光环1 + 事件第一层4 + 事件立场·己防1 + 战前大赏1 = 11
+    expect(s.def).toBe(11);
   });
 
   it("事件第一层按效果视角结算：使用者为己方吃 a1o，敌方吃 a1p", () => {
@@ -135,7 +136,7 @@ describe("攻防计算 · 常置牌（城池 / 事件）", () => {
     placeZone(Game, 1, "process", "进-01"); // 敌方放置 → 己方单位吃 a1p=1
     const u = placeUnit(Game, 0, "samurai", "武-01");
     const s = Game.unitStats(u);
-    expect(s.atk).toBe(3 + 2 + 1);
+    expect(s.atk).toBe(3 + 2 + 1 + 1); // + 战前大赏1（敌方常置牌）
     expect(s.def).toBe(4 + 1 + 1 + 1); // 含事件立场·敌防 1
   });
 
@@ -145,7 +146,8 @@ describe("攻防计算 · 常置牌（城池 / 事件）", () => {
     const noEvent = Game.unitStats(u);
     placeZone(Game, 0, "process", "进-01");
     const withEvent = Game.unitStats(u);
-    expect(withEvent.def - noEvent.def).toBe(1 + 4); // 事件立场 +1 与事件第一层 +4
+    // 事件立场 +1、事件第一层 +4、战前大赏 防+1
+    expect(withEvent.def - noEvent.def).toBe(1 + 4 + 1);
   });
 });
 

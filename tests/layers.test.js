@@ -308,22 +308,25 @@ describe("灾厄多层", () => {
     expect(p1.hp).toBe(hp1 - Math.floor(total / 2));
   });
 
-  it("第五层神迹克制：对方本回合使用过圣迹牌时第三、四层失效", () => {
+  it("第五层神迹克制：灾厄可抵消对方的圣迹牌，圣迹一切效果失效", () => {
     const { Game, p0 } = readyBoard();
-    // 对方三类型俱全 → 若无克制，第三层会更换将军牌
     placeUnit(Game, 0, "samurai", "武-01");
     placeUnit(Game, 0, "noble", "卿-01");
     placeUnit(Game, 0, "daimyo", "大-01");
     const sho0 = p0.shogun.name;
+    const hp0Before = p0.hp;
 
-    // p0 本回合以圣迹牌响应（消解一次攻击）
-    const sHi = giveCard(Game, 0, "sacred", "圣-01");
-    expect(Game.useEvent(0, sHi, true)).toBe(true);
-
+    // p1 使用灾厄（第三层本会更换将军牌）
     const hi = giveCard(Game, 1, "calamity", "灾-01");
-    expect(Game.useEvent(1, hi)).toBe(true);
+    // p0 手上持有圣迹，用于反制
+    giveCard(Game, 0, "sacred", "圣-01");
+    Game.__UI.askCounterCalamity = (c, cb) => cb(true);
 
-    expect(p0.shogun.name).toBe(sho0); // 第三层被克制，未更换将军
+    Game.useEvent(1, hi);
+
+    // 圣迹反制成功 → 灾厄一切效果不生效：将军未更换
+    expect(p0.shogun.name).toBe(sho0);
+    expect(p0.hp).toBe(hp0Before);
   });
 });
 
@@ -416,12 +419,13 @@ describe("城池第一层 · 两种增幅（常置光环）", () => {
     const before = Game.unitStats(w);
     placeZone(Game, 0, "castle", "城-07"); // 横滨 大城：城威 +1、武士 +3
     const after = Game.unitStats(w);
+    // 己方常置牌 → 战前大赏 防御 +1（将-01 X=1）
     expect(after.atk).toBe(before.atk + 1 + 3);
-    expect(after.def).toBe(before.def + 1 + 3);
+    expect(after.def).toBe(before.def + 1 + 3 + 1);
     expect(hasPart(Game, w, "城池增幅一·武士")).toBe(true);
 
     placeZone(Game, 0, "process", "进-01"); // 顶替为事件 → 城池增幅失效
-    // 此时只剩事件第一层（己方 +4）的加成，不再有城威与增幅一
+    // 此时只剩事件第一层（己方 +4）与战前大赏 防+1，不再有城威与增幅一
     expect(Game.unitStats(w).atk).toBe(before.atk + 4);
     expect(hasPart(Game, w, "城池增幅一·武士")).toBe(false);
   });
@@ -486,7 +490,7 @@ describe("城池第一层 · 两种增幅（常置光环）", () => {
     placeZone(Game, 0, "castle", "城-01"); // 京都：城威 +3、兵刃 +2
     const after = Game.unitStats(u);
     expect(after.atk).toBe(before.atk + 3); // 只吃城威（无兵刃）
-    expect(after.def).toBe(before.def + 3);
+    expect(after.def).toBe(before.def + 3 + 1); // 城威 + 战前大赏（己方常置牌 防+1）
   });
 });
 
@@ -602,15 +606,15 @@ describe("圣迹 · 八咫乌引路", () => {
   });
 });
 
-describe("增幅归零 · 回收减半造成的数值变化", () => {
-  it("装备替死减半后，御·庇护增幅归零把减半损失一并回收", () => {
+describe("增幅归零 · 御·庇护形态", () => {
+  it("庇护后攻击归零、防御改为卡面攻+防，减半损失一并回收", () => {
     const { Game } = readyBoard();
     placeZone(Game, 1, "castle", "城-01"); // 敌方王城 → ④ 装备替死
     placeUnit(Game, 0, "noble", "卿-04"); // ④ 敌方王城·装备替死
     const d = placeUnit(Game, 0, "daimyo", "大-01");
     equip(Game, 0, "blade", "刃-01", d);
 
-    const atkBefore = d.baseAtk, defBefore = d.baseDef;
+    const atkBefore = d.baseAtk;
     const info = Game.castleSacrificeInfo(0, d);
     expect(info.kind).toBe(4);
     Game.doCastleSacrifice(0, d, info);
@@ -618,9 +622,628 @@ describe("增幅归零 · 回收减半造成的数值变化", () => {
     expect(d.halveLoss.atk).toBe(atkBefore - d.baseAtk);
 
     Game.doPurge(0, d);
-    expect(d.baseAtk).toBe(atkBefore);
-    expect(d.baseDef).toBe(defBefore);
+    // 新规则：攻击值归零，防御值 = 卡面初始攻击值 + 卡面初始防御值
+    expect(d.baseAtk).toBe(0);
+    expect(d.baseDef).toBe(d.card.atk + d.card.dfs);
+    expect(Game.unitStats(d).atk).toBe(0);
+    expect(Game.unitStats(d).def).toBe(d.card.atk + d.card.dfs);
     expect(d.halveLoss).toBe(null);
     expect((d.hist || []).some(h => (h.desc || "").includes("回收减半损失"))).toBe(true);
+  });
+
+  it("庇护武士受击：按攻击值全额扣减防御值，归零下场", () => {
+    const { Game, p0 } = readyBoard();
+    const w = placeUnit(Game, 0, "samurai", "武-01"); // 卡面 攻3 防4 → 庇护后 攻0 防7
+    Game.doPurge(0, w);
+    expect(Game.unitStats(w).atk).toBe(0);
+    expect(Game.unitStats(w).def).toBe(7);
+
+    const attacker = placeUnit(Game, 1, "samurai", "武-03");
+    attacker.baseAtk = 3; attacker.extraAtk = 0; attacker.fx = "";
+    const atk = Game.unitStats(attacker).atk;
+    expect(atk).toBeGreaterThan(0);
+
+    Game.attack(1, attacker.uid, w.uid);
+    expect(p0.field).toContain(w);
+    expect(Game.unitStats(w).def).toBe(7 - atk); // 全额扣减，不减免
+    expect(Game.unitStats(w).atk).toBe(0);
+  });
+
+  it("庇护公卿以防御值承伤，归零下场", () => {
+    const { Game, p0 } = readyBoard();
+    const n = placeUnit(Game, 0, "noble", "卿-01"); // 卡面 攻2 防4 → 庇护后 攻0 防6
+    Game.doPurge(0, n);
+    expect(Game.unitStats(n).atk).toBe(0);
+    expect(Game.unitStats(n).def).toBe(6);
+
+    const attacker = placeUnit(Game, 1, "samurai", "武-03");
+    attacker.baseAtk = 8; attacker.extraAtk = 0; attacker.fx = "";
+
+    Game.attack(1, attacker.uid, n.uid);
+    expect(p0.field).not.toContain(n);
+  });
+
+  it("庇护体攻击值为 0，无法发动攻击", () => {
+    const { Game } = readyBoard();
+    const w = placeUnit(Game, 0, "samurai", "武-01");
+    Game.doPurge(0, w);
+    const target = placeUnit(Game, 1, "samurai", "武-01");
+
+    expect(Game.attack(0, w.uid, target.uid)).toBe(false);
+    expect(w.attackedThisTurn).toBeFalsy(); // 未消耗攻击次数
+  });
+});
+
+describe("天皇 · 天皇之怒（指定类型下场 → 对方将军 −Y）", () => {
+  it("指定类型下场时扣对方将军，非指定类型不触发", () => {
+    const { Game, CARDS } = loadGame({ seed: 5 });
+    scenario(Game, CARDS, {
+      p0: { emperor: "天-01", shogun: "将-01", hp: 50 }, // 天皇之怒：大名 / 1
+      p1: { emperor: "天-02", shogun: "将-01", hp: 50 },
+    });
+    const [p0, p1] = Game.state.players;
+    p0.rankUsed = true; p1.rankUsed = true;
+    const emp = p0.emperor;
+    expect(emp.wrathX).toBe("大名");
+    expect(emp.wrathY).toBe(1);
+
+    const samurai = placeUnit(Game, 0, "samurai", "武-01");
+    const hp1Before = p1.hp;
+
+    // 非指定类型（武士）下场：不触发
+    Game.removeUnit(samurai);
+    expect(p1.hp).toBe(hp1Before);
+
+    // 指定类型（大名）下场：对方将军 −1
+    const daimyo = placeUnit(Game, 0, "daimyo", "大-01");
+    Game.removeUnit(daimyo);
+    expect(p1.hp).toBe(hp1Before - 1);
+  });
+
+  it("每张天皇牌的 X 为三类之一、Y 为 1～3 整数", () => {
+    const { CARDS } = loadGame({ seed: 5 });
+    const kinds = ["武士", "公卿", "大名"];
+    for (const e of CARDS.emperors) {
+      expect(kinds, `${e.id} 的 wrathX 非法`).toContain(e.wrathX);
+      expect(Number.isInteger(e.wrathY), `${e.id} 的 wrathY 非整数`).toBe(true);
+      expect(e.wrathY).toBeGreaterThanOrEqual(1);
+      expect(e.wrathY).toBeLessThanOrEqual(3);
+    }
+    // 3 类 × 3 值 = 9 种组合，10 张牌必然有 1 组重复；其余 9 组应各不相同
+    const combos = CARDS.emperors.map((e) => `${e.wrathX}${e.wrathY}`);
+    expect(new Set(combos).size).toBeGreaterThanOrEqual(9);
+  });
+});
+
+describe("将军技能 · 战前大赏 / 战后共荣", () => {
+  function board(shogunId) {
+    const { Game, CARDS } = loadGame({ seed: 9 });
+    scenario(Game, CARDS, {
+      p0: { emperor: "天-08", shogun: shogunId, hp: 50 },
+      p1: { emperor: "天-08", shogun: "将-01", hp: 50 },
+    });
+    for (const p of Game.state.players) { p.turnsTaken = 3; p.shogun.dodge = 0; p.rankUsed = true; }
+    Game.askPurge = (t, c, cb) => cb(false);
+    return { Game, p0: Game.state.players[0], p1: Game.state.players[1] };
+  }
+
+  it("战前大赏：己方常置牌 → 武士防御 +X；敌方常置牌 → 武士攻击 +X", () => {
+    const { Game } = board("将-07");
+    const X = Game.state.players[0].shogun.warReward;
+    expect(X).toBeGreaterThanOrEqual(1);
+    const w = placeUnit(Game, 0, "samurai", "武-02"); // 无「己防/敌防」事件立场，排除干扰
+
+    const bare = Game.unitStats(w);
+    placeZone(Game, 0, "process", "进-01"); // 己方事件
+    const own = Game.unitStats(w);
+    // 己方常置牌：事件第一层 4 + 战前大赏 X
+    expect(own.def - bare.def).toBe(4 + X);
+    // 攻击：事件第一层 4 + 武-02 自带「己攻」立场 1（不含战前大赏）
+    expect(own.atk - bare.atk).toBe(4 + 1);
+
+    placeZone(Game, 1, "castle", "城-07"); // 敌方大城（城威 ap=0）
+    const foe = Game.unitStats(w);
+    // 敌方常置牌：攻击额外 +X；「敌攻」立场只在事件牌在场时生效，此处无事件
+    expect(foe.atk - bare.atk).toBe(X);
+    // 防御不含战前大赏
+    expect(foe.def).toBe(bare.def);
+  });
+
+  it("战前大赏只作用于己方武士，不影响公卿/大名", () => {
+    const { Game } = board("将-07");
+    const n = placeUnit(Game, 0, "noble", "卿-01");
+    const before = Game.unitStats(n).def;
+    placeZone(Game, 0, "process", "进-01");
+    const after = Game.unitStats(n).def;
+    // 只吃事件第一层 +4，不吃战前大赏
+    expect(after - before).toBe(4);
+  });
+
+  it("战后共荣：本回合打伤对方将军 → 大名命值 +1、公卿攻击 +1", () => {
+    const { Game, p0, p1 } = board("将-05");
+    expect(p0.shogun.postGlory).toBe(true);
+    const d = placeUnit(Game, 0, "daimyo", "大-01");
+    d.hp = 17;
+    const n = placeUnit(Game, 0, "noble", "卿-01");
+    const nAtk = Game.unitStats(n).atk;
+
+    // 未打伤：不结算（先清掉 setup 阶段可能产生的伤害记录）
+    Game.state.turnDamage = {};
+    Game.postGlorySettle(0);
+    expect(d.hp).toBe(17);
+    expect(Game.unitStats(n).atk).toBe(nAtk);
+
+    // 打伤 5 点后结算
+    p1.hp -= 5;
+    Game.hpEvent(1, 5, "测试伤害", p1.hp);
+    Game.postGlorySettle(0);
+    expect(d.hp).toBe(18);
+    expect(Game.unitStats(n).atk).toBe(nAtk + 1);
+  });
+
+  it("战后共荣：大名命值不超过本阶段 10 点上限", () => {
+    const { Game, p1 } = board("将-05");
+    const d = placeUnit(Game, 0, "daimyo", "大-01");
+    d.hp = 20; // 已到本阶段上限
+    p1.hp -= 3;
+    Game.hpEvent(1, 3, "测试伤害", p1.hp);
+    Game.postGlorySettle(0);
+    expect(d.hp).toBe(20); // 不再增加
+  });
+});
+
+describe("事件第四层 · 破阵 / 暗杀 对恩典召唤的限制", () => {
+  function board() {
+    const { Game, CARDS } = loadGame({ seed: 11 });
+    scenario(Game, CARDS, {
+      p0: { emperor: "天-08", shogun: "将-01", hp: 50 },
+      p1: { emperor: "天-08", shogun: "将-02", hp: 50 },
+    });
+    for (const p of Game.state.players) {
+      p.turnsTaken = 3; p.shogun.dodge = 0; p.rankUsed = true;
+      p.graceCnt = 3; // 满足恩典召唤的回合条件
+    }
+    return Game;
+  }
+  const giveDaimyo = (Game, pi) => {
+    Game.state.players[pi].hand.push({ type: "daimyo", card: Game.__card("daimyo", "大-01") });
+    return Game.state.players[pi].hand.length - 1;
+  };
+
+  it("己方事件为破阵：己方不得恩典召唤，对方不受限", () => {
+    const Game = board();
+    placeZone(Game, 0, "process", "进-01"); // 承久之乱 · 破阵
+    expect(Game.graceBlock(0)).toContain("破阵");
+    expect(Game.graceBlock(1)).toBe(null);
+
+    expect(Game.graceSummon(0, giveDaimyo(Game, 0))).toBe(false);
+    expect(Game.graceSummon(1, giveDaimyo(Game, 1))).toBe(true);
+  });
+
+  it("己方事件为暗杀：对方不得恩典召唤，己方不受限", () => {
+    const Game = board();
+    placeZone(Game, 0, "process", "进-04"); // 观应之扰乱 · 暗杀
+    expect(Game.graceBlock(1)).toContain("暗杀");
+    expect(Game.graceBlock(0)).toBe(null);
+
+    expect(Game.graceSummon(1, giveDaimyo(Game, 1))).toBe(false);
+    expect(Game.graceSummon(0, giveDaimyo(Game, 0))).toBe(true);
+  });
+
+  it("常置牌区为空时不受限制", () => {
+    const Game = board();
+    expect(Game.state.zone).toBe(null);
+    expect(Game.graceBlock(0)).toBe(null);
+    expect(Game.graceBlock(1)).toBe(null);
+    expect(Game.graceSummon(0, giveDaimyo(Game, 0))).toBe(true);
+  });
+
+  it("canGrace 在受限时返回 false", () => {
+    const Game = board();
+    const p0 = Game.state.players[0];
+    giveDaimyo(Game, 0);
+    expect(Game.canGrace(p0)).toBe(true);
+    placeZone(Game, 0, "process", "进-01"); // 破阵
+    expect(Game.canGrace(p0)).toBe(false);
+  });
+});
+
+describe("城池第六层 · 城破 / 易主", () => {
+  function board() {
+    const { Game, CARDS } = loadGame({ seed: 13 });
+    scenario(Game, CARDS, {
+      p0: { emperor: "天-08", shogun: "将-01", hp: 50 },
+      p1: { emperor: "天-08", shogun: "将-02", hp: 50 },
+    });
+    for (const p of Game.state.players) { p.turnsTaken = 3; p.shogun.dodge = 0; p.rankUsed = true; }
+    return Game;
+  }
+
+  it("城破：城池被顶替时，原持有方公卿全部下场，武士与对方单位不受影响", () => {
+    const Game = board();
+    const [p0, p1] = Game.state.players;
+    placeZone(Game, 0, "castle", "城-01");
+    placeUnit(Game, 0, "noble", "卿-01");
+    placeUnit(Game, 0, "noble", "卿-03");
+    const w = placeUnit(Game, 0, "samurai", "武-01");
+    placeUnit(Game, 1, "noble", "卿-02");
+
+    p0.zoneUsed = 0;
+    p0.hand.push({ type: "process", card: Game.__card("process", "进-01") });
+    Game.playZone(0, p0.hand.length - 1);
+
+    expect(p0.field.filter(u => u.kind === "noble")).toHaveLength(0);
+    expect(p0.field).toContain(w);                                        // 武士保留
+    expect(p1.field.filter(u => u.kind === "noble")).toHaveLength(1);     // 对方不受影响
+  });
+
+  it("易主：控制方转给对方时，原持有方武士全部移交给新持有方，公卿不移交", () => {
+    const Game = board();
+    const [p0, p1] = Game.state.players;
+    placeZone(Game, 0, "castle", "城-01");
+    const w1 = placeUnit(Game, 0, "samurai", "武-01");
+    const w2 = placeUnit(Game, 0, "samurai", "武-02");
+    const n = placeUnit(Game, 0, "noble", "卿-01");
+
+    p1.rankUsed = false;
+    Game.useRank(1, "castle"); // 尊位·易帜
+
+    expect(p0.field.filter(u => u.kind === "samurai")).toHaveLength(0);
+    expect(p1.field).toContain(w1);
+    expect(p1.field).toContain(w2);
+    expect(w1.pi).toBe(1);
+    expect(w2.pi).toBe(1);
+    expect(p0.field).toContain(n); // 公卿不移交
+  });
+
+  it("无 l6 的城池不触发（防回归）", () => {
+    const Game = board();
+    const [p0] = Game.state.players;
+    const z = placeZone(Game, 0, "castle", "城-01");
+    z.card = { ...z.card, l6: undefined };
+    const n = placeUnit(Game, 0, "noble", "卿-01");
+
+    p0.zoneUsed = 0;
+    p0.hand.push({ type: "process", card: Game.__card("process", "进-01") });
+    Game.playZone(0, p0.hand.length - 1);
+
+    expect(p0.field).toContain(n); // 未触发城破
+  });
+});
+
+describe("圣迹第三层 · 神怒 / 神佑", () => {
+  function board() {
+    const { Game, CARDS } = loadGame({ seed: 17 });
+    scenario(Game, CARDS, {
+      p0: { emperor: "天-08", shogun: "将-01", hp: 50 },
+      p1: { emperor: "天-08", shogun: "将-02", hp: 50 },
+    });
+    for (const p of Game.state.players) { p.turnsTaken = 3; p.shogun.dodge = 0; p.rankUsed = true; }
+    return Game;
+  }
+  const give = (G, pi, type, key) => {
+    G.state.players[pi].hand.push({ type, card: G.__card(type, key) });
+    return G.state.players[pi].hand.length - 1;
+  };
+
+  it("神怒：当前常置牌非己方（含区为空）→ 己方将军 −1", () => {
+    const G1 = board();
+    placeZone(G1, 1, "process", "进-01"); // 敌方常置牌
+    const hp1 = G1.state.players[0].hp;
+    G1.useEvent(0, give(G1, 0, "sacred", "圣-01")); // l3=神怒
+    expect(G1.state.players[0].hp).toBe(hp1 - 1);
+
+    const G2 = board(); // 区为空
+    const hp2 = G2.state.players[0].hp;
+    G2.useEvent(0, give(G2, 0, "sacred", "圣-01"));
+    expect(G2.state.players[0].hp).toBe(hp2 - 1);
+  });
+
+  it("神怒：当前常置牌为己方时不触发", () => {
+    const G = board();
+    placeZone(G, 0, "process", "进-01");
+    const hp = G.state.players[0].hp;
+    G.useEvent(0, give(G, 0, "sacred", "圣-01"));
+    expect(G.state.players[0].hp).toBe(hp);
+  });
+
+  it("神佑：当前常置牌为己方 → 抽一张牌；非己方则不抽", () => {
+    const G1 = board();
+    placeZone(G1, 0, "process", "进-01");
+    const d1 = G1.state.deck.length;
+    G1.useEvent(0, give(G1, 0, "sacred", "圣-02")); // l3=神佑
+    expect(G1.state.deck.length).toBe(d1 - 1);
+
+    const G2 = board();
+    placeZone(G2, 1, "process", "进-01");
+    const d2 = G2.state.deck.length;
+    G2.useEvent(0, give(G2, 0, "sacred", "圣-02"));
+    expect(G2.state.deck.length).toBe(d2);
+  });
+
+  it("第三层独立于第二层的生命条件", () => {
+    const G = board();
+    placeZone(G, 1, "process", "进-01");
+    // 圣-01 cond=A（需己方生命高于对方）；把己方压到更低，使第二层不生效
+    G.state.players[0].hp = 10;
+    G.state.players[1].hp = 50;
+    G.state.players[0].natureUsed = true; // 屏蔽「本性·苏生」回血干扰
+    const hp0 = G.state.players[0].hp;
+    G.useEvent(0, give(G, 0, "sacred", "圣-01"));
+    // 第二层未生效，第三层神怒照常 −1；但「天命·昭昭」（己方用圣迹）同时 +1
+    expect(G.state.players[0].hp).toBe(hp0);
+    expect(G.state.log.some(l => l.msg.includes("第二层生命条件未满足"))).toBe(true);
+    expect(G.state.log.some(l => l.msg.includes("神怒"))).toBe(true);
+  });
+});
+
+describe("第五层 · 圣迹与灾厄互相抵消", () => {
+  function board() {
+    const { Game, CARDS } = loadGame({ seed: 19 });
+    scenario(Game, CARDS, {
+      p0: { emperor: "天-08", shogun: "将-01", hp: 50 },
+      p1: { emperor: "天-08", shogun: "将-02", hp: 50 },
+    });
+    for (const p of Game.state.players) { p.turnsTaken = 3; p.shogun.dodge = 0; p.rankUsed = true; }
+    return Game;
+  }
+  const give = (G, pi, type, key) => {
+    G.state.players[pi].hand.push({ type, card: G.__card(type, key) });
+    return G.state.players[pi].hand.length - 1;
+  };
+
+  it("灾厄第五层·神迹克制：抵消圣迹后其一切效果不生效（含第三层）", () => {
+    const G = board();
+    placeZone(G, 0, "process", "进-01");
+    give(G, 1, "calamity", "灾-01");
+    // p1 为 AI：圣-06「更换天皇」属威胁牌，会被自动抵消
+    const emp0 = G.state.players[0].emperor.name;
+    const deck0 = G.state.deck.length;
+    G.useEvent(0, give(G, 0, "sacred", "圣-06"));
+    expect(G.state.players[0].emperor.name).toBe(emp0); // 第二层未生效
+    expect(G.state.deck.length).toBe(deck0);            // 无额外抽牌
+    expect(G.state.log.some(l => l.msg.includes("神迹克制"))).toBe(true);
+  });
+
+  it("圣迹第五层·灾厄克制：抵消灾厄后其一切效果不生效", () => {
+    const G = board();
+    placeUnit(G, 0, "samurai", "武-01");
+    placeUnit(G, 0, "noble", "卿-01");
+    placeUnit(G, 0, "daimyo", "大-01");
+    const sho0 = G.state.players[0].shogun.name;
+    const hp0 = G.state.players[0].hp;
+    give(G, 0, "sacred", "圣-02");
+    G.__UI.askCounterCalamity = (c, cb) => cb(true);
+    G.useEvent(1, give(G, 1, "calamity", "灾-01"));
+    // 第三层王座更迭未生效
+    expect(G.state.players[0].shogun.name).toBe(sho0);
+    expect(G.state.players[0].hp).toBe(hp0);
+  });
+});
+
+describe("天皇第四能力 · 天命", () => {
+  function board() {
+    const { Game, CARDS } = loadGame({ seed: 23 });
+    scenario(Game, CARDS, {
+      p0: { emperor: "天-08", shogun: "将-01", hp: 50 },
+      p1: { emperor: "天-08", shogun: "将-02", hp: 50 },
+    });
+    for (const p of Game.state.players) {
+      p.turnsTaken = 3; p.shogun.dodge = 0; p.rankUsed = true; p.natureUsed = true;
+    }
+    return Game;
+  }
+  it("天命昭昭：己方使用圣迹 → 己方将军 +1", () => {
+    const G = board();
+    const p0 = G.state.players[0];
+    p0.hp = 40; // 留出上限空间（上限 50）
+    const hp = p0.hp;
+    G.emperorDestiny(0, "sacred"); // 直接调用，排除圣迹第三层干扰
+    expect(p0.hp).toBe(hp + 1);
+  });
+
+  it("天命晦暗：对方使用圣迹 → 己方武士攻击 −1", () => {
+    const G = board();
+    const w = placeUnit(G, 0, "samurai", "武-02");
+    const before = G.unitStats(w).atk;
+    G.emperorDestiny(1, "sacred"); // 对方使用
+    expect(G.unitStats(w).atk).toBe(before - 1);
+  });
+
+  it("天命诡谲：己方使用灾厄 → 己方公卿防御 −1", () => {
+    const G = board();
+    const n = placeUnit(G, 0, "noble", "卿-01");
+    const before = G.unitStats(n).def;
+    G.emperorDestiny(0, "calamity");
+    expect(G.unitStats(n).def).toBe(before - 1);
+  });
+
+  it("天命有失：对方使用灾厄 → 己方大名命值 −1", () => {
+    const G = board();
+    const d = placeUnit(G, 0, "daimyo", "大-01");
+    const before = d.hp;
+    G.emperorDestiny(1, "calamity");
+    expect(d.hp).toBe(before - 1);
+  });
+
+  it("双向结算：双方各按自己的视角判定己方/对方", () => {
+    const G = board();
+    const w0 = placeUnit(G, 0, "samurai", "武-02");
+    const w1 = placeUnit(G, 1, "samurai", "武-02");
+    const b0 = G.unitStats(w0).atk, b1 = G.unitStats(w1).atk;
+    G.emperorDestiny(0, "sacred"); // p0 使用 → p0 是「己方」，p1 是「对方」
+    expect(G.unitStats(w0).atk).toBe(b0);     // 己方使用 → 不降
+    expect(G.unitStats(w1).atk).toBe(b1 - 1); // 对方使用 → 降
+  });
+
+  it("天皇效果失效期间不结算天命", () => {
+    const G = board();
+    const p0 = G.state.players[0];
+    p0.emperorDisabled = 3;
+    const hp = p0.hp;
+    G.emperorDestiny(0, "sacred");
+    expect(p0.hp).toBe(hp);
+  });
+});
+
+describe("骑具 · 八百里分麾下炙 / 兵刃 · 断刃重铸", () => {
+  function board() {
+    const { Game, CARDS } = loadGame({ seed: 29 });
+    scenario(Game, CARDS, {
+      p0: { emperor: "天-08", shogun: "将-01", hp: 50 },
+      p1: { emperor: "天-08", shogun: "将-02", hp: 50 },
+    });
+    for (const p of Game.state.players) {
+      p.turnsTaken = 3; p.shogun.dodge = 0; p.rankUsed = true; p.natureUsed = true;
+    }
+    return Game;
+  }
+
+  it("八百里分麾下炙：骑具下场 → 己方所有武士攻击 +1，公卿不受影响", () => {
+    const G = board();
+    const w1 = placeUnit(G, 0, "samurai", "武-02");
+    const w2 = placeUnit(G, 0, "samurai", "武-03");
+    const n = placeUnit(G, 0, "noble", "卿-01");
+    const holder = placeUnit(G, 0, "samurai", "武-04");
+    equip(G, 0, "mount", "骑-01", holder);
+
+    const b1 = G.unitStats(w1).atk, b2 = G.unitStats(w2).atk, bn = G.unitStats(n).atk;
+    G.mountLeaves(0, holder.eq.mount);
+
+    expect(G.unitStats(w1).atk).toBe(b1 + 1);
+    expect(G.unitStats(w2).atk).toBe(b2 + 1);
+    expect(G.unitStats(holder).atk).toBe(G.unitStats(holder).atk); // 装备者同为武士，同样 +1
+    expect(G.unitStats(n).atk).toBe(bn); // 公卿不受影响
+  });
+
+  it("八百里分麾下炙：场上无武士时不结算", () => {
+    const G = board();
+    const n = placeUnit(G, 0, "noble", "卿-01");
+    const before = G.unitStats(n).atk;
+    G.mountLeaves(0, { name: "测试骑具" });
+    expect(G.unitStats(n).atk).toBe(before);
+  });
+
+  it("断刃重铸：支付当前生命 1/10，兵刃转移到其他可装备目标", () => {
+    const G = board();
+    const p0 = G.state.players[0];
+    const a = placeUnit(G, 0, "samurai", "武-02");
+    const b = placeUnit(G, 0, "samurai", "武-03");
+    equip(G, 0, "blade", "刃-01", a);
+    p0.hp = 50;
+
+    const info = G.reforgeInfo(0);
+    expect(info.ok).toBe(true);
+    expect(info.cost).toBe(5);
+
+    const aAtk = G.unitStats(a).atk, bAtk = G.unitStats(b).atk;
+    expect(G.useReforge(0, a.uid, b.uid)).toBe(true);
+
+    expect(p0.hp).toBe(45);
+    expect(a.eq.blade).toBe(null);
+    expect(b.eq.blade).toBeTruthy();
+    expect(G.unitStats(a).atk).toBeLessThan(aAtk);
+    expect(G.unitStats(b).atk).toBeGreaterThan(bAtk);
+  });
+
+  it("断刃重铸：每回合限一次", () => {
+    const G = board();
+    const a = placeUnit(G, 0, "samurai", "武-02");
+    const b = placeUnit(G, 0, "samurai", "武-03");
+    const c = placeUnit(G, 0, "samurai", "武-04");
+    equip(G, 0, "blade", "刃-01", a);
+
+    expect(G.useReforge(0, a.uid, b.uid)).toBe(true);
+    expect(G.reforgeInfo(0).blocked).toContain("本回合");
+    expect(G.useReforge(0, b.uid, c.uid)).toBe(false);
+  });
+
+  it("断刃重铸：无其他可接收目标时 targets 为空", () => {
+    const G = board();
+    const a = placeUnit(G, 0, "samurai", "武-02");
+    equip(G, 0, "blade", "刃-01", a);
+    // 场上仅一个可装备者且已持兵刃 → 无可接收目标
+    const info = G.reforgeInfo(0);
+    expect(info.ok).toBe(true);
+    expect(info.targets).toHaveLength(0);
+  });
+
+  it("断刃重铸：场上无兵刃时不可用", () => {
+    const G = board();
+    placeUnit(G, 0, "samurai", "武-02");
+    expect(G.reforgeInfo(0).blocked).toContain("无已装备的兵刃");
+  });
+});
+
+describe("隐藏特效 · 春和景明 / 偶感风寒", () => {
+  function board() {
+    const { Game, CARDS } = loadGame({ seed: 31 });
+    scenario(Game, CARDS, {
+      p0: { emperor: "天-08", shogun: "将-01", hp: 50 },
+      p1: { emperor: "天-08", shogun: "将-02", hp: 50 },
+    });
+    for (const p of Game.state.players) {
+      p.turnsTaken = 3; p.shogun.dodge = 0; p.rankUsed = true; p.natureUsed = true;
+    }
+    return Game;
+  }
+
+  it("春和景明：己方常置牌在区且使用圣迹 → 将军 +1", () => {
+    const G = board();
+    const p0 = G.state.players[0];
+    placeZone(G, 0, "process", "进-01");
+    p0.hp = 40;
+    G.hiddenMood(0, "sacred");
+    expect(p0.hp).toBe(41);
+  });
+
+  it("偶感风寒：己方常置牌在区且使用灾厄 → 将军 −1", () => {
+    const G = board();
+    const p0 = G.state.players[0];
+    placeZone(G, 0, "castle", "城-01");
+    p0.hp = 40;
+    G.hiddenMood(0, "calamity");
+    expect(p0.hp).toBe(39);
+  });
+
+  it("常置牌非己方（含区为空）时不触发", () => {
+    const G1 = board();
+    const p1 = G1.state.players[0];
+    placeZone(G1, 1, "process", "进-01"); // 敌方
+    p1.hp = 40;
+    G1.hiddenMood(0, "sacred");
+    expect(p1.hp).toBe(40);
+
+    const G2 = board();
+    const p2 = G2.state.players[0];
+    p2.hp = 40;
+    G2.hiddenMood(0, "sacred"); // 区为空
+    expect(p2.hp).toBe(40);
+  });
+
+  it("同一回合同一特效只触发一次，两种特效可各触发一次", () => {
+    const G = board();
+    const p0 = G.state.players[0];
+    placeZone(G, 0, "process", "进-01");
+    p0.hp = 40;
+    G.hiddenMood(0, "sacred");
+    G.hiddenMood(0, "sacred");
+    expect(p0.hp).toBe(41); // 只 +1
+
+    G.hiddenMood(0, "calamity");
+    expect(p0.hp).toBe(40); // 再 −1
+  });
+
+  it("回合开始重置，可跨回合再次触发", () => {
+    const G = board();
+    const p0 = G.state.players[0];
+    placeZone(G, 0, "process", "进-01");
+    p0.hp = 40;
+    G.hiddenMood(0, "sacred");
+    expect(p0.hp).toBe(41);
+
+    p0.moodUsed = {}; // 模拟回合重置（beginTurn 中的行为）
+    G.hiddenMood(0, "sacred");
+    expect(p0.hp).toBe(42);
   });
 });

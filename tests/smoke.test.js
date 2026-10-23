@@ -6,14 +6,14 @@ describe("smoke · 引擎可在 Node 中加载", () => {
     const { CARDS, Game } = loadGame();
     expect(typeof CARDS).toBe("object");
     expect(typeof Game.setup).toBe("function");
-    expect(allCards(CARDS).length).toBe(190);
+    expect(allCards(CARDS).length).toBe(205);
   });
 
   it("setup 能开一局并分好牌", () => {
     const { Game } = loadGame();
     Game.setup(null, [50, 50]);
     expect(Game.state.players).toHaveLength(2);
-    expect(Game.state.deck.length + 10).toBe(170); // 170 张共用卡组，10 张已发到双方手牌
+    expect(Game.state.deck.length + 10).toBe(185); // 185 张共用卡组，10 张已发到双方手牌
     expect(Game.state.players[0].hand).toHaveLength(5);
     expect(Game.state.players[1].hand).toHaveLength(5);
   });
